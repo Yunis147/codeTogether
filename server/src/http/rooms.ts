@@ -13,6 +13,7 @@ import {
   createStarterContent,
   createStarterTree,
 } from '../sync/tree.js';
+import { resetRoomIdentityConnections, resetRoomShareLinkConnections } from '../sync/index.js';
 import { firstIssue, withRoomAccess, withUser } from './middleware.js';
 
 export const roomsRouter = Router();
@@ -262,6 +263,8 @@ roomsRouter.patch(
       data: { role: parsed.data.role },
     });
 
+    resetRoomIdentityConnections(access.roomId, userId);
+
     response.json({ member: { id: userId, role: updated.role } });
   }),
 );
@@ -292,6 +295,8 @@ roomsRouter.delete(
     await prisma.membership.delete({
       where: { userId_roomId: { userId, roomId: access.roomId } },
     });
+
+    resetRoomIdentityConnections(access.roomId, userId);
 
     response.status(204).end();
   }),
@@ -363,6 +368,8 @@ roomsRouter.delete(
       response.status(404).json({ error: 'That link is already inactive.' });
       return;
     }
+
+    resetRoomShareLinkConnections(access.roomId, String(request.params.linkId));
 
     response.status(204).end();
   }),

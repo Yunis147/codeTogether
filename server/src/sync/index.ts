@@ -103,3 +103,32 @@ export const syncServer = new Server<SyncContext>({
     }
   },
 });
+
+/**
+ * Drop every document connection for one person in one room. Membership is
+ * checked when a provider reconnects, so this makes a role downgrade or
+ * removal take effect immediately instead of leaving an old editable socket
+ * alive until the browser happens to reconnect.
+ */
+export function resetRoomIdentityConnections(roomId: string, identityId: string): void {
+  closeRoomConnections(roomId, (context) => context.identityId === identityId);
+}
+
+/** Drop live guest sockets that were authorised by a now-revoked share link. */
+export function resetRoomShareLinkConnections(roomId: string, linkId: string): void {
+  closeRoomConnections(roomId, (context) => context.guest && context.shareLinkId === linkId);
+}
+
+function closeRoomConnections(
+  roomId: string,
+  shouldClose: (context: SyncContext) => boolean,
+): void {
+  for (const [documentName, document] of syncServer.hocuspocus.documents) {
+    const target = parseDocumentName(documentName);
+    if (!target || target.roomId !== roomId) continue;
+
+    for (const connection of document.connections.keys()) {
+      if (connection.context && shouldClose(connection.context)) connection.close();
+    }
+  }
+}

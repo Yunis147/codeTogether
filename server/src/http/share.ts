@@ -89,6 +89,7 @@ shareRouter.post('/:token/join', limiter, async (request, response) => {
   const token = signToken({
     kind: 'guest',
     guestId,
+    linkId: link.id,
     roomId: link.roomId,
     name: parsed.data.name,
     role: link.role,

@@ -74,7 +74,7 @@ async function enterWorkspace(targetRoomId?: string): Promise<void> {
 // ─── Auth landing pages ───────────────────────────────────────────────────────
 
 function LandingPage() {
-  const { signIn, signUp, user } = useSession();
+  const { signIn, signUp } = useSession();
   const [tab, setTab] = useState<'signin' | 'signup'>('signin');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -82,21 +82,20 @@ function LandingPage() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // Already signed-in users go straight to their workspace editor
-  useEffect(() => {
-    if (user) void enterWorkspace();
-  }, [user]);
-
   const submit = async (): Promise<void> => {
     setError('');
     setBusy(true);
     try {
-      if (tab === 'signup') {
-        const roomId = await signUp({ name, email, password });
-        await enterWorkspace(roomId ?? undefined);
-      } else {
-        const roomId = await signIn({ email, password });
-        await enterWorkspace(roomId ?? undefined);
+      const roomId = tab === 'signup'
+        ? await signUp({ name, email, password })
+        : await signIn({ email, password });
+
+      // Router owns ordinary workspace entry. A guest who just authenticated
+      // needs an explicit destination so the router cannot create a fresh room
+      // while the linked room is being opened.
+      if (roomId) {
+        localStorage.setItem('codetogether.lastRoomId', roomId);
+        navigate({ name: 'room', roomId }, { replace: true });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');

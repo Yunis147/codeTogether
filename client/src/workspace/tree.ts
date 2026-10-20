@@ -25,7 +25,10 @@ function asTreeNode(id: string, value: unknown): TreeNode | null {
     name,
     type,
     language: typeof node.language === 'string' ? node.language : null,
-    order: typeof node.order === 'number' && Number.isFinite(node.order) ? node.order : 0,
+    order:
+      typeof node.order === 'number' && Number.isFinite(node.order)
+        ? Math.floor(Math.abs(node.order)) % 2_147_483_647
+        : 0,
   };
 }
 
@@ -160,7 +163,7 @@ export function createNode(
     name: input.name,
     type: input.type,
     language: input.type === 'FILE' ? languageFor(input.name) : null,
-    order: Date.now(),
+    order: Math.floor(Date.now() % 2_147_483_647),
   };
 
   treeMap(doc).set(node.id, node);

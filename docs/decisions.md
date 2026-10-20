@@ -106,3 +106,28 @@ Format:
 - Decision: Rebuilt `App.tsx` into a clean routed application integrating all Phase 3 and Phase 4 components (`RoomProvider`, `FilesPanel`, `EditorTabs`, `SearchPanel`, `RoomsPanel`, `CollaboratorList`, `SettingsPanel`), replaced image-based rail icons with stroked SVG icons, crafted a design-token CSS system with VS Code-inspired dark and light theme palettes, set up the Vite `/sync` WebSocket proxy, and connected model-swapping in `RoomProvider` to single-instance Monaco binding.
 - Why: `App.tsx` was still running the legacy Phase 2 monolithic layout despite Phase 3/4 components existing in the codebase, and the UI styling needed to reach a clean, professional VS Code-level standard without broken assets or dead code.
 - Alternatives: Mounting multiple Monaco editor instances simultaneously in tabs (which wasted memory and caused binding synchronization race conditions).
+
+## 2026-10-20: Reset stale room connections after an access change
+- Decision: when an owner changes a member's role or removes them, close that identity's active Hocuspocus document connections for the room.
+- Why: Hocuspocus applies read-only status when it authenticates a connection. Without a reset, an already-connected editor could keep its former write permission until it reconnects.
+- Alternatives: recheck database membership for every Yjs update, which adds a database query to the hot sync path; closing every room participant's connection, which disrupts collaborators who were unaffected.
+
+## 2026-10-20: Guard globally keyed file mirrors by room
+- Decision: keep the existing global `File.id` primary key and reject a tree or file update when its ID already belongs to another room.
+- Why: this prevents a client-controlled Yjs tree from overwriting metadata in another room without requiring a potentially disruptive primary-key migration for existing local databases.
+- Alternatives: changing `File` to a composite `[roomId, id]` primary key now, which Prisma correctly flags as a potentially partial data-loss migration; trusting client-generated UUIDs alone.
+
+## 2026-10-20: Vitest regression coverage for tree and offline convergence
+- Decision: add Vitest to both workspaces with regression tests for tree order normalization, cycle rendering safety, and offline Yjs convergence.
+- Why: Phase 4 requires an automated test proving offline edits converge after reconnecting, and the project previously had no test runner.
+- Alternatives: relying on manual two-tab verification, which cannot reliably catch regressions in CRDT merge behavior.
+
+## 2026-10-20: Guest sessions are tied to their share link
+- Decision: guest JWTs include the id of the share link that granted the session. The access layer verifies that link remains active, and revoking a link closes the affected guest sync connections.
+- Why: a signed guest token otherwise retains access until expiry after the owner has revoked its link.
+- Alternatives: accepting the token until its expiry, or querying share-link status for every individual Yjs update.
+
+## 2026-10-20: The router is the single owner of default-room entry
+- Decision: ordinary account sign-in and sign-up let the root router select or create a default room. Authentication only navigates directly when it returns a guest-linked room id.
+- Why: overlapping workspace-entry effects could create two rooms for a new account and leave an invited guest in the first room while the owner was moved to the second.
+- Alternatives: keeping several independently triggered entry effects and trying to coordinate their asynchronous requests with component-local flags.

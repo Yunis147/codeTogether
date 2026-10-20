@@ -18,6 +18,8 @@ export type RoomAccess = {
   guest: boolean;
   /** User id for a registered user, guest id for a guest. */
   identityId: string;
+  /** Present only for guests, so a revoked link can drop their live sockets. */
+  shareLinkId?: string;
 };
 
 export class AccessError extends Error {
@@ -89,6 +91,15 @@ export async function resolveRoomAccess(
     if (payload.roomId !== roomId) {
       throw new AccessError('This guest link is for a different room.', 403);
     }
+
+    const link = await prisma.shareLink.findFirst({
+      where: { id: payload.linkId, roomId, revokedAt: null },
+      select: { id: true },
+    });
+    if (!link) {
+      throw new AccessError('This share link is no longer active.', 403);
+    }
+
     return {
       roomId,
       role: payload.role,
@@ -96,6 +107,7 @@ export async function resolveRoomAccess(
       color: colorFor(payload.guestId),
       guest: true,
       identityId: payload.guestId,
+      shareLinkId: link.id,
     };
   }
 
@@ -109,6 +121,12 @@ export async function roomAccessFromRequest(request: Request, roomId: string): P
 
   const guest = verifyToken(bearerToken(request));
   if (guest?.kind === 'guest' && guest.roomId === roomId) {
+    const link = await prisma.shareLink.findFirst({
+      where: { id: guest.linkId, roomId, revokedAt: null },
+      select: { id: true },
+    });
+    if (!link) throw new AccessError('This share link is no longer active.', 403);
+
     return {
       roomId,
       role: guest.role,
@@ -116,6 +134,7 @@ export async function roomAccessFromRequest(request: Request, roomId: string): P
       color: colorFor(guest.guestId),
       guest: true,
       identityId: guest.guestId,
+      shareLinkId: link.id,
     };
   }
 

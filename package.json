@@ -10,7 +10,8 @@
     "db:push": "node scripts/db-push.mjs",
     "build": "npm run build --workspace=server && npm run build --workspace=client",
     "lint": "npm run lint --workspace=server && npm run lint --workspace=client",
-    "typecheck": "npm run typecheck --workspace=server && npm run typecheck --workspace=client"
+    "typecheck": "npm run typecheck --workspace=server && npm run typecheck --workspace=client",
+    "test": "npm run test --workspace=server && npm run test --workspace=client"
   },
   "allowScripts": {
     "argon2@0.45.1": true

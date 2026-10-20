@@ -12,6 +12,8 @@ export type UserPayload = { kind: 'user'; userId: string; name: string };
 export type GuestPayload = {
   kind: 'guest';
   guestId: string;
+  /** The share link that granted this session, used to honour revocation. */
+  linkId: string;
   roomId: string;
   name: string;
   role: Role;

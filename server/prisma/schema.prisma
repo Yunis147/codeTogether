@@ -74,6 +74,9 @@ model ShareLink {
 /// the whole tree in one transaction, so a foreign key would only impose an
 /// insert ordering that buys nothing here.
 model File {
+  /// Client-minted IDs are globally unique. The sync mirror verifies their
+  /// room before updating a row, so a malicious tree cannot reuse an ID from
+  /// another room.
   id String @id
   roomId String
   parentId String?

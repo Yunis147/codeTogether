@@ -613,33 +613,47 @@ export function RoomProvider({ roomId, role, token, children }: RoomProviderProp
         // Content goes into the file's own document. Each one is opened just
         // long enough to write and flush, then closed again.
         const fileDoc = new Y.Doc();
+        const initialSyncState = { resolve: (): void => {} };
+        const flushState = { resolve: (): void => {} };
+        let waitingForFlush = false;
+        const initialSync = new Promise<void>((resolve) => {
+          initialSyncState.resolve = resolve;
+        });
+        const flush = new Promise<void>((resolve) => {
+          flushState.resolve = resolve;
+        });
         const provider = new HocuspocusProvider({
           websocketProvider: websocket,
           name: fileDocumentName(roomId, fileId),
           document: fileDoc,
           token: token ?? '',
+          // These callbacks are registered before attach(), unlike the old
+          // event handlers. A fast connection therefore cannot emit the
+          // completion event before import starts listening for it.
+          onSynced: ({ state }) => {
+            if (state) initialSyncState.resolve();
+          },
+          onUnsyncedChanges: ({ number }) => {
+            if (waitingForFlush && number === 0) flushState.resolve();
+          },
         });
         provider.attach();
 
-        await new Promise<void>((resolve) => {
-          const timer = window.setTimeout(resolve, 5000);
-          provider.on('synced', () => {
-            window.clearTimeout(timer);
-            resolve();
-          });
-        });
+        await Promise.race([
+          initialSync,
+          new Promise<void>((resolve) => window.setTimeout(resolve, 5_000)),
+        ]);
 
+        waitingForFlush = true;
         fileDoc.getText(CONTENT_TEXT_KEY).insert(0, entry.content);
-
-        await new Promise<void>((resolve) => {
-          const timer = window.setTimeout(resolve, 2000);
-          provider.on('unsyncedChanges', ({ number }: { number: number }) => {
-            if (number === 0) {
-              window.clearTimeout(timer);
-              resolve();
-            }
-          });
-        });
+        // If a provider already acknowledged the local update by the time the
+        // synchronous Yjs transaction returns, there is no event left to wait
+        // for. Otherwise the pre-registered callback resolves the promise.
+        if (!provider.hasUnsyncedChanges) flushState.resolve();
+        await Promise.race([
+          flush,
+          new Promise<void>((resolve) => window.setTimeout(resolve, 5_000)),
+        ]);
 
         provider.destroy();
         fileDoc.destroy();
