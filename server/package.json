@@ -1,0 +1,35 @@
+{
+  "name": "@codetogether/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "db:push": "prisma db push"
+  },
+  "dependencies": {
+    "@hocuspocus/server": "^4.7.0",
+    "@prisma/client": "^6.16.2",
+    "argon2": "^0.45.1",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "yjs": "^13.6.33",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.3",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^24.5.2",
+    "eslint": "^9.36.0",
+    "prisma": "^6.16.2",
+    "tsx": "^4.20.5",
+    "typescript-eslint": "^8.44.0"
+  }
+}

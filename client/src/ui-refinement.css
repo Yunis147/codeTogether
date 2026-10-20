@@ -1,0 +1,14 @@
+/**
+ * Supplemental tweaks that build on style.css.
+ * Kept minimal — the main stylesheet handles almost everything.
+ */
+
+/* Monaco fills the editor pane correctly */
+.editor-pane > div { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.editor-pane .monaco-editor { flex: 1; }
+
+/* Ensure the tree panel fills the sidebar properly */
+.panel { flex: 1; overflow: hidden; }
+
+/* Gutter and line highlight match the design tokens */
+.monaco-editor .current-line { border: none !important; }

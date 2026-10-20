@@ -1,0 +1,31 @@
+{
+  "name": "@codetogether/client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "typecheck": "tsc -b --pretty"
+  },
+  "dependencies": {
+    "@hocuspocus/provider": "^4.7.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "monaco-editor": "^0.57.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "vite": "^7.1.7",
+    "y-monaco": "^0.1.6",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "eslint": "^9.36.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.44.0"
+  }
+}

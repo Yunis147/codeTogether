@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum NodeType {
+  FILE
+  FOLDER
+}
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  name String
+  passwordHash String
+  createdAt DateTime @default(now())
+  roomsOwned Room[] @relation("RoomOwner")
+  memberships Membership[]
+}
+
+model Room {
+  id String @id @default(cuid())
+  name String
+  ownerId String
+  owner User @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  /// Snapshot of the room-level Yjs document holding the file tree structure.
+  treeState Bytes?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  memberships Membership[]
+  shareLinks ShareLink[]
+  files File[]
+}
+
+model Membership {
+  id String @id @default(cuid())
+  userId String
+  roomId String
+  role Role
+  joinedAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  @@unique([userId, roomId])
+  @@index([roomId])
+}
+
+model ShareLink {
+  id String @id @default(cuid())
+  roomId String
+  token String @unique
+  role Role
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  @@index([roomId])
+}
+
+/// Mirror of the file tree that lives in the room's Yjs document. Yjs is the
+/// source of truth; these rows exist so search and zip export can read a whole
+/// project from SQL without loading every file's Yjs document into memory.
+///
+/// `id` has no default because ids are minted by the client into the Yjs tree.
+/// `parentId` is a plain column rather than a self-relation: the mirror replaces
+/// the whole tree in one transaction, so a foreign key would only impose an
+/// insert ordering that buys nothing here.
+model File {
+  id String @id
+  roomId String
+  parentId String?
+  name String
+  type NodeType
+  language String?
+  /// Yjs snapshot of this file's content document. Null for folders.
+  ydocState Bytes?
+  /// Plain-text copy of the content, written alongside ydocState, used by search.
+  textContent String?
+  order Int @default(0)
+  updatedAt DateTime @updatedAt
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  @@index([roomId])
+  @@index([roomId, parentId])
+}
