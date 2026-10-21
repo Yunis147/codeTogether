@@ -37,6 +37,7 @@ type RoomPresence = {
   color: string;
   role: RoomAccess['role'];
   guest: boolean;
+  avatarUrl: string | null;
   fileId: string | null;
 };
 
@@ -83,6 +84,13 @@ function errorMessage(error: unknown): string {
   return 'Chat is temporarily unavailable.';
 }
 
+async function announceActivity(roomId: string, access: RoomAccess, content: string): Promise<void> {
+  const message = await prisma.chatMessage.create({
+    data: { roomId, authorId: access.identityId, authorName: access.name, authorColor: access.color, content },
+  });
+  activeChatServer?.to(roomChannel(roomId)).emit('chat:message', asMessage(message));
+}
+
 function roomPresence(access: RoomAccess, fileId: string | null): RoomPresence {
   return {
     id: access.identityId,
@@ -90,6 +98,7 @@ function roomPresence(access: RoomAccess, fileId: string | null): RoomPresence {
     color: access.color,
     role: access.role,
     guest: access.guest,
+    avatarUrl: access.avatarUrl,
     fileId,
   };
 }
@@ -146,6 +155,10 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
         const access = await currentAccess(socket, parsed.data.roomId);
         const previous = socket.data.session;
         if (previous) socket.leave(roomChannel(previous.roomId));
+        const wasPresent = Array.from(io.sockets.adapter.rooms.get(roomChannel(access.roomId)) ?? []).some((socketId) => {
+          const peer = io.sockets.sockets.get(socketId);
+          return peer?.data.session?.access.identityId === access.identityId;
+        });
 
         socket.data.session = {
           roomId: access.roomId,
@@ -162,6 +175,7 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
         });
         socket.emit('chat:history', messages.reverse().map(asMessage));
         broadcastPresence(access.roomId);
+        if (!wasPresent) void announceActivity(access.roomId, access, 'joined the room.');
         acknowledge({ ok: true });
       } catch (error) {
         acknowledge({ ok: false, error: errorMessage(error) });
@@ -219,8 +233,15 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
     });
 
     socket.on('disconnect', () => {
-      const roomId = socket.data.session?.roomId;
-      if (roomId) queueMicrotask(() => broadcastPresence(roomId));
+      const session = socket.data.session;
+      if (session) queueMicrotask(() => {
+        broadcastPresence(session.roomId);
+        const stillPresent = Array.from(io.sockets.adapter.rooms.get(roomChannel(session.roomId)) ?? []).some((socketId) => {
+          const peer = io.sockets.sockets.get(socketId);
+          return peer?.data.session?.access.identityId === session.access.identityId;
+        });
+        if (!stillPresent) void announceActivity(session.roomId, session.access, 'left the room.');
+      });
     });
   });
 

@@ -47,6 +47,7 @@ type SessionValue = {
   startGuestSession: (session: GuestSession) => void;
   endGuestSession: () => void;
   renameSelf: (name: string) => Promise<void>;
+  uploadAvatar: (file: File) => Promise<void>;
 };
 
 const SessionContext = createContext<SessionValue | null>(null);
@@ -136,6 +137,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setUser(result.user);
   }, []);
 
+  const uploadAvatar = useCallback(async (file: File) => {
+    const data = new FormData();
+    data.set('photo', file);
+    const response = await fetch('/api/auth/me/avatar', { method: 'POST', credentials: 'include', body: data });
+    const payload = (await response.json()) as { user?: AuthUser; error?: string };
+    if (!response.ok || !payload.user) throw new Error(payload.error ?? 'Could not upload profile photo.');
+    setUser(payload.user);
+  }, []);
+
   const value = useMemo<SessionValue>(
     () => ({
       loading,
@@ -147,8 +157,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       startGuestSession,
       endGuestSession,
       renameSelf,
+      uploadAvatar,
     }),
-    [loading, user, guest, signUp, signIn, signOut, startGuestSession, endGuestSession, renameSelf],
+    [loading, user, guest, signUp, signIn, signOut, startGuestSession, endGuestSession, renameSelf, uploadAvatar],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

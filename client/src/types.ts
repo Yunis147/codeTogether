@@ -19,6 +19,7 @@ export type AuthUser = {
   name: string;
   email: string;
   color: string;
+  avatarUrl: string | null;
 };
 
 export type RoomSummary = {
@@ -46,6 +47,7 @@ export type Person = {
   color: string;
   role: Role;
   guest: boolean;
+  avatarUrl?: string | null;
   /** Which file they have open, when they have told us. */
   fileId: string | null;
   isYou: boolean;

@@ -153,8 +153,9 @@ export async function mirrorTree(roomId: string, doc: Y.Doc): Promise<void> {
 
   await prisma.$transaction([
     prisma.room.update({ where: { id: roomId }, data: { treeState } }),
-    prisma.file.deleteMany({
-      where: { roomId, ...(keep.length > 0 ? { id: { notIn: keep } } : {}) },
+    prisma.file.updateMany({
+      where: { roomId, deletedAt: null, ...(keep.length > 0 ? { id: { notIn: keep } } : {}) },
+      data: { deletedAt: new Date() },
     }),
     ...nodes.map((node) =>
       prisma.file.upsert({
@@ -167,6 +168,7 @@ export async function mirrorTree(roomId: string, doc: Y.Doc): Promise<void> {
           type: node.type as NodeType,
           language: node.language,
           order: Math.floor(Math.abs(node.order || 0)) % 2_147_483_647,
+          deletedAt: null,
         },
         // Content columns are deliberately untouched: they are written by the
         // file's own document, which stores on its own schedule.
@@ -176,6 +178,7 @@ export async function mirrorTree(roomId: string, doc: Y.Doc): Promise<void> {
           type: node.type as NodeType,
           language: node.language,
           order: Math.floor(Math.abs(node.order || 0)) % 2_147_483_647,
+          deletedAt: null,
         },
       }),
     ),

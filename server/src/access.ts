@@ -15,6 +15,7 @@ export type RoomAccess = {
   role: Role;
   name: string;
   color: string;
+  avatarUrl: string | null;
   guest: boolean;
   /** User id for a registered user, guest id for a guest. */
   identityId: string;
@@ -64,6 +65,7 @@ export function currentUser(request: Request): UserPayload | null {
 async function accessForUser(userId: string, name: string, roomId: string): Promise<RoomAccess> {
   const membership = await prisma.membership.findUnique({
     where: { userId_roomId: { userId, roomId } },
+    include: { user: { select: { avatarUrl: true } } },
   });
 
   if (!membership) throw new AccessError('You are not a member of this room.', 403);
@@ -73,6 +75,7 @@ async function accessForUser(userId: string, name: string, roomId: string): Prom
     role: membership.role,
     name,
     color: colorFor(userId),
+    avatarUrl: membership.user.avatarUrl,
     guest: false,
     identityId: userId,
   };
@@ -109,6 +112,7 @@ export async function resolveRoomAccess(
       role: payload.role,
       name: payload.name,
       color: colorFor(payload.guestId),
+      avatarUrl: null,
       guest: true,
       identityId: payload.guestId,
       shareLinkId: link.id,
@@ -136,6 +140,7 @@ export async function roomAccessFromRequest(request: Request, roomId: string): P
       role: guest.role,
       name: guest.name,
       color: colorFor(guest.guestId),
+      avatarUrl: null,
       guest: true,
       identityId: guest.guestId,
       shareLinkId: link.id,

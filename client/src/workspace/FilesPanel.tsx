@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { api } from '../api';
 import type { TreeNode } from '../types';
 import { Icon } from '../ui/Icon';
+import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
 import { useRoom } from './RoomProvider';
 import { badgeFor } from './language';
@@ -23,6 +25,10 @@ export function FilesPanel({ roomName }: { roomName: string }) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined);
   const [importing, setImporting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string; folder: boolean } | null>(null);
+  const [recycleBin, setRecycleBin] = useState<Array<TreeNode & { deletedAt: string }>>([]);
+  const [showRecycleBin, setShowRecycleBin] = useState(false);
+  const [loadingRecycleBin, setLoadingRecycleBin] = useState(false);
 
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -46,8 +52,27 @@ export function FilesPanel({ roomName }: { roomName: string }) {
     });
 
   const confirmAndRemove = (id: string, name: string, isFolder: boolean) => {
-    if (window.confirm(`Delete "${name}"${isFolder ? ' and its contents' : ''}?`)) {
-      room.remove(id);
+    setPendingDelete({ id, name, folder: isFolder });
+  };
+
+  const openRecycleBin = async (): Promise<void> => {
+    setShowRecycleBin(true);
+    setLoadingRecycleBin(true);
+    try {
+      // Hocuspocus saves collaborative tree updates on a debounce. Retry for
+      // a short window so a just-deleted item is present on the first open.
+      let files: Array<TreeNode & { deletedAt: string }> = [];
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 750));
+        const result = await api<{ files: Array<TreeNode & { deletedAt: string }> }>(`/api/rooms/${room.roomId}/recycle-bin`);
+        files = result.files;
+        if (files.length > 0) break;
+      }
+      setRecycleBin(files);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not load the recycle bin.', 'error');
+    } finally {
+      setLoadingRecycleBin(false);
     }
   };
 
@@ -320,6 +345,9 @@ export function FilesPanel({ roomName }: { roomName: string }) {
           >
             <Icon name="upload" size={16} />
           </button>
+          <button type="button" className="icon-button" title="Recycle bin" onClick={() => void openRecycleBin()}>
+            <Icon name="trash" size={16} />
+          </button>
         </div>
       </header>
 
@@ -461,6 +489,65 @@ export function FilesPanel({ roomName }: { roomName: string }) {
             </>
           )}
         </ul>
+      )}
+      {pendingDelete && (
+        <Modal title={`Delete ${pendingDelete.folder ? 'folder' : 'file'}?`} onClose={() => setPendingDelete(null)} width={400}>
+          <div className="delete-confirm">
+            <div className="delete-confirm-icon"><Icon name="trash" size={18} /></div>
+            <div>
+              <p className="delete-confirm-title">Move <b>{pendingDelete.name}</b> to the recycle bin?</p>
+              <p className="muted">You can restore it later.</p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button type="button" className="button-quiet" onClick={() => setPendingDelete(null)}>Cancel</button>
+              <button type="button" className="button-danger" onClick={() => { room.remove(pendingDelete.id); setPendingDelete(null); }}>Move to bin</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {showRecycleBin && (
+        <Modal title="Recycle bin" subtitle="Restore files and folders deleted from this room." onClose={() => setShowRecycleBin(false)} width={460}>
+          <div className="recycle-bin">
+            {loadingRecycleBin ? <p className="muted">Loading deleted items…</p> : recycleBin.length === 0 ? (
+              <div className="recycle-empty"><Icon name="trash" size={24} /><p>The recycle bin is empty.</p></div>
+            ) : recycleBin.map((item) => (
+              <div className="recycle-item" key={item.id}>
+                <Icon name={item.type === 'FOLDER' ? 'folder' : 'files'} size={16} />
+                <div><b>{item.name}</b><small>Deleted {new Date(item.deletedAt).toLocaleString()}</small></div>
+                <button type="button" className="button-quiet" disabled={room.readOnly} onClick={() => {
+                  const restoring = new Set<string>([item.id]);
+                  let changed = true;
+                  while (changed) {
+                    changed = false;
+                    for (const candidate of recycleBin) {
+                      if (candidate.parentId && restoring.has(candidate.parentId) && !restoring.has(candidate.id)) {
+                        restoring.add(candidate.id);
+                        changed = true;
+                      }
+                    }
+                  }
+                  // Parents must be put back before their children so the
+                  // original folder layout is restored intact.
+                  const selected = recycleBin.filter((entry) => restoring.has(entry.id));
+                  const depthOf = (entry: TreeNode & { deletedAt: string }): number => {
+                    let depth = 0;
+                    let parentId = entry.parentId;
+                    while (parentId) {
+                      const parent = selected.find((candidate) => candidate.id === parentId);
+                      if (!parent) break;
+                      depth += 1;
+                      parentId = parent.parentId;
+                    }
+                    return depth;
+                  };
+                  for (const entry of selected.sort((left, right) => depthOf(left) - depthOf(right))) room.restoreDeleted(entry);
+                  setRecycleBin((current) => current.filter((entry) => !restoring.has(entry.id)));
+                  toast(`Restored ${item.name}${restoring.size > 1 ? ` and ${restoring.size - 1} item${restoring.size === 2 ? '' : 's'}` : ''}.`);
+                }}>Restore</button>
+              </div>
+            ))}
+          </div>
+        </Modal>
       )}
     </div>
   );

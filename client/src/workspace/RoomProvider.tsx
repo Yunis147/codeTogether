@@ -21,6 +21,7 @@ import {
   moveNode,
   readTree,
   renameNode,
+  restoreNode,
   setNodeLanguage,
   treeMap,
   uniqueName,
@@ -88,6 +89,7 @@ export type RoomValue = {
   move: (fileId: string, parentId: string | null) => void;
   remove: (fileId: string) => void;
   setLanguage: (fileId: string, language: string) => void;
+  restoreDeleted: (node: TreeNode) => void;
   importFiles: (entries: { path: string; content: string }[]) => Promise<number>;
 
   undo: () => void;
@@ -575,6 +577,16 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
     [withTree],
   );
 
+  const restoreDeleted = useCallback(
+    (node: TreeNode) => {
+      withTree((doc, nodes) => {
+        const parentExists = node.parentId === null || nodes.some((entry) => entry.id === node.parentId);
+        restoreNode(doc, { ...node, parentId: parentExists ? node.parentId : null });
+      });
+    },
+    [withTree],
+  );
+
   /**
    * Import writes through Yjs rather than an upload endpoint, so every peer sees
    * the files appear live and a viewer is stopped by the same read-only
@@ -743,6 +755,7 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
       move,
       remove,
       setLanguage,
+      restoreDeleted,
       importFiles,
       undo,
       redo,
@@ -776,6 +789,7 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
       move,
       remove,
       setLanguage,
+      restoreDeleted,
       importFiles,
       undo,
       redo,

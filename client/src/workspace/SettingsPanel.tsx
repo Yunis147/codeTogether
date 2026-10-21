@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { apiBlob } from '../api';
 import { navigate } from '../hooks/useRoute';
 import { FONT_SIZES, usePreferences } from '../settings/PreferencesProvider';
@@ -10,13 +10,32 @@ import { useRoom } from './RoomProvider';
 
 export function SettingsPanel() {
   const { theme, setTheme, fontSize, setFontSize } = usePreferences();
-  const { user, guest, signOut, renameSelf } = useSession();
+  const { user, guest, signOut, renameSelf, uploadAvatar } = useSession();
   const room = useRoom();
   const toast = useToast();
 
   const [name, setName] = useState(user?.name ?? guest?.name ?? '');
   const [savingName, setSavingName] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const avatarInput = useRef<HTMLInputElement>(null);
+
+  const chooseAvatar = async (file: File): Promise<void> => {
+    if (!file.type.match(/^image\/(png|jpe?g|webp|gif)$/) || file.size > 2 * 1024 * 1024) {
+      toast('Choose a PNG, JPEG, WebP, or GIF image under 2 MB.', 'error');
+      return;
+    }
+    setUploadingAvatar(true);
+    try {
+      await uploadAvatar(file);
+      toast('Profile photo updated.');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not upload profile photo.', 'error');
+    } finally {
+      setUploadingAvatar(false);
+      if (avatarInput.current) avatarInput.current.value = '';
+    }
+  };
 
   const download = async (): Promise<void> => {
     setExporting(true);
@@ -118,12 +137,25 @@ export function SettingsPanel() {
           {user ? (
             <>
               <div className="setting-identity">
-                <Avatar name={user.name} color={user.color} size={34} />
+                <Avatar name={user.name} color={user.color} photoUrl={user.avatarUrl} size={34} />
                 <div>
                   <b>{user.name}</b>
                   <small>{user.email}</small>
                 </div>
               </div>
+              <input
+                ref={avatarInput}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void chooseAvatar(file);
+                }}
+              />
+              <button type="button" className="button-quiet button-wide" onClick={() => avatarInput.current?.click()} disabled={uploadingAvatar}>
+                <Icon name="upload" size={15} /> {uploadingAvatar ? 'Uploading photo…' : 'Upload profile photo'}
+              </button>
 
               <label className="setting-row setting-stacked" htmlFor="display-name">
                 <span>Display name</span>

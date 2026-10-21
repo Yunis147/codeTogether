@@ -15,7 +15,7 @@ export type RoomChatMessage = {
   createdAt: string;
 };
 
-export type LiveRoomPerson = Pick<Person, 'id' | 'name' | 'color' | 'role' | 'guest' | 'fileId'>;
+export type LiveRoomPerson = Pick<Person, 'id' | 'name' | 'color' | 'role' | 'guest' | 'fileId' | 'avatarUrl'>;
 
 type ChatAck = { ok: true } | { ok: false; error: string };
 

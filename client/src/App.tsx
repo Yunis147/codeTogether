@@ -9,7 +9,7 @@ import { PreferencesProvider, usePreferences } from './settings/PreferencesProvi
 import { ToastProvider, useToast } from './ui/Toast';
 import { Modal } from './ui/Modal';
 import { Icon, Brand } from './ui/Icon';
-import { Avatar, AvatarStack, colorFor } from './ui/Avatar';
+import { Avatar, colorFor } from './ui/Avatar';
 import { Resizer } from './workspace/Resizer';
 import { FilesPanel } from './workspace/FilesPanel';
 import { SearchPanel } from './workspace/SearchPanel';
@@ -1058,7 +1058,6 @@ function Topbar({
             <kbd>⌘↵</kbd>
           </button>
         )}
-        <AvatarStack people={room.people} limit={4} />
         <button
           type="button"
           className={`topbar-chat-btn${chatOpen ? ' is-active' : ''}`}
@@ -1086,7 +1085,8 @@ function Topbar({
         {identity && (
           <Avatar
             name={identity.name}
-            color={user?.color ?? room.people.find((p) => p.isYou)?.color ?? '#7c6fff'}
+            color={user?.color ?? room.people.find((person) => person.isYou)?.color ?? '#7c6fff'}
+            photoUrl={user?.avatarUrl}
             size={28}
             ring
           />
@@ -1352,6 +1352,7 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
                 <Avatar
                   name={(user ?? guest)!.name}
                   color={user?.color ?? '#7c6fff'}
+                  photoUrl={user?.avatarUrl}
                   size={28}
                 />
               </button>

@@ -1,6 +1,7 @@
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import { createServer } from 'node:http';
+import path from 'node:path';
 import { createChatServer } from './chat.js';
 import { env } from './env.js';
 import { authRouter } from './http/auth.js';
@@ -20,6 +21,7 @@ app.set('trust proxy', 1);
 // travel through Yjs. The run route enforces its own tighter 1 MB source limit.
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
+app.use('/uploads', express.static(path.resolve('uploads')));
 
 app.use('/api/auth', authRouter);
 app.use('/api/rooms', roomsRouter);

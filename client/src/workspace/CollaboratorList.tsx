@@ -31,7 +31,7 @@ export function CollaboratorList({ people: suppliedPeople }: { people?: Person[]
 
         return (
           <div key={person.id} className={`collaborator${following ? ' is-following' : ''}`}>
-            <Avatar name={person.name} color={person.color} size={24} />
+            <Avatar name={person.name} color={person.color} photoUrl={person.avatarUrl} size={24} />
 
             <button
               type="button"

@@ -252,6 +252,7 @@ input::placeholder { color: var(--text-dim); }
   user-select: none;
   color: #fff;
 }
+.avatar img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 
 .avatar-ring {
   box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--border);
@@ -708,6 +709,30 @@ input::placeholder { color: var(--text-dim); }
   font-weight: 600;
 }
 .topbar-leave-btn:hover { color: var(--red); border-color: var(--red); }
+
+.button-danger {
+  padding: 7px 12px;
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  background: rgba(248, 113, 113, .12);
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
+}
+.button-danger:hover { background: rgba(248, 113, 113, .22); }
+
+.delete-confirm { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: start; }
+.delete-confirm-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--red); background: rgba(248, 113, 113, .12); }
+.delete-confirm-title { margin: 3px 0 4px; font-size: 14px; line-height: 1.35; }
+.delete-confirm .muted { margin: 0; font-size: 12px; }
+.delete-confirm-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.recycle-bin { display: flex; flex-direction: column; gap: 8px; min-height: 80px; }
+.recycle-item { display: flex; align-items: center; gap: 10px; padding: 9px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
+.recycle-item > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.recycle-item b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recycle-item small { color: var(--text-muted); font-size: 11px; }
+.recycle-empty { display: grid; place-items: center; gap: 8px; min-height: 130px; color: var(--text-muted); }
+.recycle-empty p { margin: 0; }
 
 .topbar-chat-btn {
   position: relative;

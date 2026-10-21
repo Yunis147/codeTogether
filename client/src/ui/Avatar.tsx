@@ -23,9 +23,10 @@ type AvatarProps = {
   size?: number;
   title?: string;
   ring?: boolean;
+  photoUrl?: string | null;
 };
 
-export function Avatar({ name, color, size = 28, title, ring = false }: AvatarProps) {
+export function Avatar({ name, color, size = 28, title, ring = false, photoUrl = null }: AvatarProps) {
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -44,7 +45,7 @@ export function Avatar({ name, color, size = 28, title, ring = false }: AvatarPr
       }}
       title={title ?? name}
     >
-      {initials || name[0]?.toUpperCase() || '?'}
+      {photoUrl ? <img src={photoUrl} alt="" /> : initials || name[0]?.toUpperCase() || '?'}
     </span>
   );
 }

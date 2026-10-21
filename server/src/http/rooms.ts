@@ -454,6 +454,18 @@ roomsRouter.delete(
   }),
 );
 
+roomsRouter.get(
+  '/:roomId/recycle-bin',
+  withRoomAccess(async (access, _request, response) => {
+    const files = await prisma.file.findMany({
+      where: { roomId: access.roomId, deletedAt: { not: null } },
+      orderBy: { deletedAt: 'desc' },
+      select: { id: true, name: true, type: true, language: true, parentId: true, order: true, deletedAt: true },
+    });
+    response.json({ files });
+  }),
+);
+
 const MAX_MATCHES_PER_FILE = 20;
 const MAX_FILES_SEARCHED = 200;
 

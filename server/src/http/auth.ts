@@ -1,5 +1,9 @@
 import argon2 from 'argon2';
 import { Router, type Response } from 'express';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+import multer from 'multer';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { currentUser } from '../access.js';
@@ -51,11 +55,22 @@ const loginSchema = z.object({
   guestToken: z.string().optional(),
 });
 
-type PublicUser = { id: string; name: string; email: string; color: string };
+type PublicUser = { id: string; name: string; email: string; color: string; avatarUrl: string | null };
 
-function publicUser(user: { id: string; name: string; email: string }): PublicUser {
-  return { id: user.id, name: user.name, email: user.email, color: colorFor(user.id) };
+function publicUser(user: { id: string; name: string; email: string; avatarUrl: string | null }): PublicUser {
+  return { id: user.id, name: user.name, email: user.email, color: colorFor(user.id), avatarUrl: user.avatarUrl };
 }
+
+const uploadDirectory = path.resolve('uploads');
+mkdirSync(uploadDirectory, { recursive: true });
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: uploadDirectory,
+    filename: (_request, file, callback) => callback(null, `${randomUUID()}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (_request, file, callback) => callback(null, /^image\/(png|jpe?g|webp|gif)$/.test(file.mimetype)),
+});
 
 function setSession(response: Response, user: { id: string; name: string }): void {
   response.cookie(
@@ -182,6 +197,22 @@ authRouter.get('/me', async (request, response) => {
 });
 
 const profileSchema = z.object({ name: nameField });
+
+authRouter.post(
+  '/me/avatar',
+  upload.single('photo'),
+  withUser(async (payload, request, response) => {
+    if (!request.file) {
+      response.status(400).json({ error: 'Choose a PNG, JPEG, WebP, or GIF image under 2 MB.' });
+      return;
+    }
+    const user = await prisma.user.update({
+      where: { id: payload.userId },
+      data: { avatarUrl: `/uploads/${request.file.filename}` },
+    });
+    response.json({ user: publicUser(user) });
+  }),
+);
 
 authRouter.patch(
   '/me',

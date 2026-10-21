@@ -17,6 +17,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': 'http://localhost:3001',
+      '/uploads': 'http://localhost:3001',
       '/sync': {
         target: 'ws://localhost:1234',
         ws: true,

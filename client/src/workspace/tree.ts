@@ -215,3 +215,10 @@ export function deleteNode(doc: Y.Doc, nodes: TreeNode[], id: string): string[] 
 
   return removed;
 }
+
+/** Put a previously deleted file or folder back into the shared tree. */
+export function restoreNode(doc: Y.Doc, node: TreeNode): void {
+  const map = treeMap(doc);
+  if (map.has(node.id)) return;
+  map.set(node.id, node);
+}
