@@ -15,14 +15,16 @@ import { FilesPanel } from './workspace/FilesPanel';
 import { SearchPanel } from './workspace/SearchPanel';
 import { RoomsPanel } from './workspace/RoomsPanel';
 import { SettingsPanel } from './workspace/SettingsPanel';
+import { ChatPanel, type LiveRoomPerson } from './workspace/ChatPanel';
 import { EditorTabs } from './workspace/EditorTabs';
 import { OutputPanel, type LogEntry, type ProblemEntry } from './workspace/OutputPanel';
 import { CollaboratorList } from './workspace/CollaboratorList';
 import { RoomProvider, useRoom, useActiveNode } from './workspace/RoomProvider';
 import { languageLabel, LANGUAGE_CHOICES } from './workspace/language';
+import { CONTENT_TEXT_KEY } from './workspace/tree';
 import { editorThemeFor, monaco } from './monaco/setup';
 import './monaco/setup';
-import type { ConnectionState, RoomDetail, ShareLink, Member, Role } from './types';
+import type { ConnectionState, Person, RoomDetail, ShareLink, Member, Role } from './types';
 
 // ─── Workspace Entry Helper ──────────────────────────────────────────────────
 
@@ -521,6 +523,8 @@ function ShareDialog({ roomId, onClose }: { roomId: string; onClose: () => void 
   const [links, setLinks] = useState<ShareLink[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [creating, setCreating] = useState(false);
+  const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
+  const [createdLinkId, setCreatedLinkId] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -543,7 +547,8 @@ function ShareDialog({ roomId, onClose }: { roomId: string; onClose: () => void 
         body: { role },
       });
       setLinks((prev) => [...prev.filter((l) => l.id !== result.link.id), result.link]);
-      toast('Link created.');
+      setCreatedLinkId(result.link.id);
+      toast(`${role === 'EDITOR' ? 'Editor' : 'Viewer'} link ready. Copy the highlighted link below.`);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not create link.', 'error');
     } finally {
@@ -561,10 +566,12 @@ function ShareDialog({ roomId, onClose }: { roomId: string; onClose: () => void 
     }
   };
 
-  const copyLink = async (token: string): Promise<void> => {
+  const copyLink = async (link: ShareLink): Promise<void> => {
+    const token = link.token;
     const url = `${window.location.origin}/join/${token}`;
     try {
       await navigator.clipboard.writeText(url);
+      setCopiedLinkId(link.id);
       toast('Link copied.');
     } catch {
       toast('Could not copy link.', 'error');
@@ -599,7 +606,7 @@ function ShareDialog({ roomId, onClose }: { roomId: string; onClose: () => void 
       <div className="share-dialog">
         {/* Create new link */}
         <section className="share-section">
-          <p className="eyebrow">Invite link</p>
+          <p className="eyebrow">Create an invite link</p>
           <div className="share-link-row">
             <select
               className="share-role-select"
@@ -616,28 +623,31 @@ function ShareDialog({ roomId, onClose }: { roomId: string; onClose: () => void 
               disabled={creating}
             >
               <Icon name="link" size={14} />
-              {creating ? 'Creating…' : 'Create link'}
+              {creating ? 'Creating…' : `Create ${role === 'EDITOR' ? 'editor' : 'viewer'} link`}
             </button>
           </div>
 
           {links.length > 0 && (
             <div className="share-links">
+              <p className="panel-note">Active links stay valid until you revoke them.</p>
               {links.map((link) => {
                 const url = `${window.location.origin}/join/${link.token}`;
                 return (
-                  <div key={link.id} className="share-link-item">
+                  <div key={link.id} className={`share-link-item${createdLinkId === link.id ? ' is-new' : ''}`}>
                     <span className="share-link-role">
-                      {link.role.charAt(0) + link.role.slice(1).toLowerCase()}
+                      {link.role === 'EDITOR' ? 'Can edit' : 'Can view'}
                     </span>
                     <input readOnly value={url} className="share-link-input" />
                     <button
                       type="button"
                       className="icon-button"
-                      title="Copy link"
-                      onClick={() => void copyLink(link.token)}
+                      title={copiedLinkId === link.id ? 'Copied' : 'Copy link'}
+                      aria-label={copiedLinkId === link.id ? 'Link copied' : 'Copy invite link'}
+                      onClick={() => void copyLink(link)}
                     >
-                      <Icon name="copy" size={14} />
+                      <Icon name={copiedLinkId === link.id ? 'check' : 'copy'} size={14} />
                     </button>
+                    {createdLinkId === link.id && <span className="share-link-new">New</span>}
                     <button
                       type="button"
                       className="icon-button is-danger"
@@ -695,6 +705,68 @@ function ShareDialog({ roomId, onClose }: { roomId: string; onClose: () => void 
           </section>
         )}
       </div>
+    </Modal>
+  );
+}
+
+function RenameRoomDialog({
+  roomId,
+  currentName,
+  onClose,
+  onRenamed,
+}: {
+  roomId: string;
+  currentName: string;
+  onClose: () => void;
+  onRenamed: (name: string) => void;
+}) {
+  const toast = useToast();
+  const [name, setName] = useState(currentName);
+  const [saving, setSaving] = useState(false);
+
+  const save = async (): Promise<void> => {
+    const trimmed = name.trim();
+    if (trimmed.length < 2) {
+      toast('Room names need at least 2 characters.', 'error');
+      return;
+    }
+    if (trimmed === currentName) {
+      onClose();
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const result = await api<{ room: { name: string } }>(`/api/rooms/${roomId}`, {
+        method: 'PATCH',
+        body: { name: trimmed },
+      });
+      onRenamed(result.room.name);
+      toast('Room renamed. Everyone has been notified in chat.');
+      onClose();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not rename room.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Rename room" onClose={onClose} width={420}>
+      <form
+        className="share-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <label className="field-label" htmlFor="room-name">Room name</label>
+        <input id="room-name" value={name} onChange={(event) => setName(event.target.value)} autoFocus maxLength={60} />
+        <div className="modal-actions">
+          <button type="button" className="button-quiet" onClick={onClose}>Cancel</button>
+          <button type="submit" className="button-primary" disabled={saving}>{saving ? 'Renaming…' : 'Rename room'}</button>
+        </div>
+      </form>
     </Modal>
   );
 }
@@ -929,11 +1001,25 @@ function Topbar({
   role,
   onShare,
   onRun,
+  canRun,
+  running,
+  chatOpen,
+  unreadMessages,
+  onToggleChat,
+  onRename,
+  onLeave,
 }: {
   roomName: string;
   role: string;
   onShare: () => void;
   onRun?: () => void;
+  canRun: boolean;
+  running: boolean;
+  chatOpen: boolean;
+  unreadMessages: number;
+  onToggleChat: () => void;
+  onRename: () => void;
+  onLeave: () => void;
 }) {
   const room = useRoom();
   const { user, guest } = useSession();
@@ -945,9 +1031,13 @@ function Topbar({
       <div className="topbar-left">
         <Brand />
         <span className="topbar-sep" />
-        <span className="topbar-room-name" title={roomName}>
-          {roomName}
-        </span>
+        {role === 'OWNER' ? (
+          <button type="button" className="topbar-room-name topbar-room-rename" title="Rename room" onClick={onRename}>
+            {roomName}
+          </button>
+        ) : (
+          <span className="topbar-room-name" title={roomName}>{roomName}</span>
+        )}
       </div>
 
       {/* Center: clean spacing */}
@@ -955,23 +1045,42 @@ function Topbar({
 
       {/* Right: Run button + avatars + share */}
       <div className="topbar-right">
-        {onRun && (
+        {onRun && canRun && (
           <button
             type="button"
             className="topbar-run-btn"
             onClick={onRun}
-            title="Run current file (Ctrl+Enter)"
+            title={running ? 'Program is running' : 'Run current file (Ctrl+Enter)'}
+            disabled={running}
           >
-            <Icon name="play" size={13} />
-            <span>Run</span>
+            <Icon name={running ? 'refresh' : 'play'} size={14} className={running ? 'spin' : undefined} />
+            <span>{running ? 'Running' : 'Run'}</span>
             <kbd>⌘↵</kbd>
           </button>
         )}
         <AvatarStack people={room.people} limit={4} />
+        <button
+          type="button"
+          className={`topbar-chat-btn${chatOpen ? ' is-active' : ''}`}
+          onClick={onToggleChat}
+          title="Toggle room chat (Alt+Shift+C)"
+          aria-label={unreadMessages > 0 ? `Open chat, ${unreadMessages} unread messages` : 'Toggle room chat'}
+          aria-pressed={chatOpen}
+        >
+          <Icon name="chat" size={16} />
+          <span>Chat</span>
+          {unreadMessages > 0 && <b>{unreadMessages > 99 ? '99+' : unreadMessages}</b>}
+        </button>
         {role === 'OWNER' && (
           <button type="button" className="topbar-share-btn" onClick={onShare}>
             <Icon name="share" size={14} />
             Share
+          </button>
+        )}
+        {role !== 'OWNER' && (
+          <button type="button" className="topbar-leave-btn" onClick={onLeave} title="Leave room">
+            <Icon name="logout" size={14} />
+            <span>Leave</span>
           </button>
         )}
         {identity && (
@@ -993,8 +1102,14 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
   const [panel, setPanel] = useLocalSetting<PanelId>('panel', 'files');
   const [sidebarWidth, setSidebarWidth] = useLocalSetting('sidebarWidth', 240);
   const [sidebarOpen, setSidebarOpen] = useLocalSetting('sidebarOpen', true);
+  const [chatOpen, setChatOpen] = useLocalSetting('chatOpen', false);
   const [showShare, setShowShare] = useState(false);
-  const { user, guest } = useSession();
+  const [showRename, setShowRename] = useState(false);
+  const [roomName, setRoomName] = useState(detail.room.name);
+  const { user, guest, endGuestSession } = useSession();
+  const room = useRoom();
+  const activeNode = useActiveNode();
+  const showToast = useToast();
 
   // Execution runner state
   const [outputCollapsed, setOutputCollapsed] = useLocalSetting('outputCollapsed', true);
@@ -1002,19 +1117,153 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
   const [outputProblems, setOutputProblems] = useState<ProblemEntry[]>([]);
   const [outputStdin, setOutputStdin] = useState('');
   const [outputDuration, setOutputDuration] = useState('Ready');
-  const isRunning = false;
+  const [isRunning, setIsRunning] = useState(false);
+  const [runVersion, setRunVersion] = useState(0);
+  const [unreadMessages, setUnreadMessages] = useState(0);
+  const [socketPeople, setSocketPeople] = useState<Person[]>([]);
+  const chatOpenRef = useRef(chatOpen);
+
+  useEffect(() => {
+    chatOpenRef.current = chatOpen;
+    if (chatOpen) setUnreadMessages(0);
+  }, [chatOpen]);
+
+  const toggleChat = useCallback(() => {
+    setChatOpen(!chatOpenRef.current);
+  }, [setChatOpen]);
+
+  const noteIncomingChat = useCallback(() => {
+    if (!chatOpenRef.current) setUnreadMessages((count) => count + 1);
+  }, []);
+
+  const updateSocketPeople = useCallback((people: LiveRoomPerson[]) => {
+    setSocketPeople(
+      people.map((person, index) => ({
+        ...person,
+        clientId: -(index + 1),
+        isYou: person.id === detail.identity.id,
+      })),
+    );
+  }, [detail.identity.id]);
+
+  const activePeople = socketPeople.length > 0 ? socketPeople : room.people;
+
+  const leaveRoom = useCallback(async () => {
+    if (!window.confirm('Leave this room?')) return;
+    try {
+      if (detail.guest) {
+        endGuestSession();
+        showToast('Left room.');
+        navigate({ name: 'landing' });
+      } else {
+        await api(`/api/rooms/${roomId}/leave`, { method: 'POST' });
+        showToast('Left room.');
+        navigate({ name: 'rooms' });
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not leave room.', 'error');
+    }
+  }, [detail.guest, endGuestSession, roomId, showToast]);
 
   const handleRun = useCallback(async () => {
+    if (isRunning) return;
+    if (room.readOnly || !activeNode || activeNode.type !== 'FILE') {
+      showToast('Open a Python, JavaScript, TypeScript, C, C++, or Java source file to run it.', 'error');
+      return;
+    }
+
+    const byId = new Map(room.tree.map((node) => [node.id, node]));
+    const pathFor = (nodeId: string): string | null => {
+      const segments: string[] = [];
+      const seen = new Set<string>();
+      let current = byId.get(nodeId);
+
+      while (current && !seen.has(current.id)) {
+        seen.add(current.id);
+        segments.unshift(current.name);
+        current = current.parentId ? byId.get(current.parentId) : undefined;
+      }
+
+      return current ? null : segments.length > 0 ? segments.join('/') : null;
+    };
+
+    const files = room.tree
+      .filter((node) => node.type === 'FILE')
+      .map((node) => {
+        const open = room.documentFor(node.id);
+        const content = open?.doc.getText(CONTENT_TEXT_KEY).toString();
+        const path = pathFor(node.id);
+        return path
+          ? { id: node.id, path, language: node.language, ...(content === undefined ? {} : { content }) }
+          : null;
+      })
+      .filter((file): file is { id: string; path: string; language: string | null; content?: string } => file !== null);
+
+    const entryPath = pathFor(activeNode.id);
+    if (!entryPath) {
+      showToast('This file cannot be located in the project tree.', 'error');
+      return;
+    }
+
     setOutputCollapsed(false);
-    setOutputLogs([
-      {
-        type: 'system',
-        text: '⏳ Code execution via Judge0 is coming in Phase 5. Stay tuned!',
-      },
-    ]);
+    setRunVersion((version) => version + 1);
+    setIsRunning(true);
+    setOutputLogs([{ type: 'system', text: `Running ${entryPath} in the isolated code runner…` }]);
     setOutputProblems([]);
-    setOutputDuration('—');
-  }, [setOutputCollapsed]);
+    setOutputDuration('Starting…');
+
+    try {
+      const { result } = await api<{
+        result: {
+          status: { id: number; description: string };
+          stdout: string | null;
+          stderr: string | null;
+          compileOutput: string | null;
+          message: string | null;
+          time: string | null;
+          memory: number | null;
+        };
+      }>(`/api/rooms/${roomId}/run`, {
+        method: 'POST',
+        body: { entryFileId: activeNode.id, stdin: outputStdin, files },
+      });
+
+      const failureOutput = [result.compileOutput, result.stderr, result.message]
+        .filter((value): value is string => Boolean(value))
+        .join('\n');
+      const lines: LogEntry[] = [
+        {
+          type: result.status.id === 3 ? 'info' : 'error',
+          text: `${result.status.id === 3 ? '✓' : '×'} ${result.status.description}`,
+        },
+      ];
+      if (result.stdout) lines.push({ type: 'log', text: result.stdout.trimEnd() });
+      if (failureOutput) lines.push({ type: 'error', text: failureOutput.trimEnd() });
+      if (!result.stdout && !failureOutput && result.status.id === 3) {
+        lines.push({ type: 'system', text: 'Program finished without output.' });
+      }
+      setOutputLogs(lines);
+
+      const problems: ProblemEntry[] = [];
+      for (const match of failureOutput.matchAll(/(?:^|\n)([^:\n]+\.java):(\d+):/g)) {
+        problems.push({ file: match[1], line: Number(match[2]), message: 'Java compilation error' });
+      }
+      for (const match of failureOutput.matchAll(/File "([^"]+)", line (\d+)/g)) {
+        problems.push({ file: match[1], line: Number(match[2]), message: 'Python execution error' });
+      }
+      setOutputProblems(problems);
+
+      const memory = result.memory === null ? '' : ` · ${(result.memory / 1024).toFixed(1)} MB`;
+      setOutputDuration(result.time ? `${result.time}s${memory}` : result.status.description);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Code execution failed.';
+      setOutputLogs([{ type: 'error', text: message }]);
+      setOutputDuration('Run failed');
+      showToast(message, 'error');
+    } finally {
+      setIsRunning(false);
+    }
+  }, [activeNode, isRunning, outputStdin, room, roomId, setOutputCollapsed, showToast]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1022,7 +1271,12 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
         return;
       }
-      if (detail.role === 'VIEWER') return;
+      if (e.altKey && e.shiftKey && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        toggleChat();
+        return;
+      }
+      if (room.readOnly) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         handleRun();
@@ -1030,7 +1284,7 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleRun, detail.role]);
+  }, [handleRun, room.readOnly, toggleChat]);
 
   const togglePanel = (p: PanelId) => {
     if (panel === p && sidebarOpen) {
@@ -1045,10 +1299,17 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
     <div className="app-shell">
       {/* Top bar */}
       <Topbar
-        roomName={detail.room.name}
+        roomName={roomName}
         role={detail.role}
         onShare={() => setShowShare(true)}
         onRun={handleRun}
+        canRun={!room.readOnly}
+        running={isRunning}
+        chatOpen={chatOpen}
+        unreadMessages={unreadMessages}
+        onToggleChat={toggleChat}
+        onRename={() => setShowRename(true)}
+        onLeave={() => void leaveRoom()}
       />
 
       <div className="ide">
@@ -1101,7 +1362,7 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
         {/* Sidebar */}
         {sidebarOpen && (
           <aside className="sidebar" style={{ width: sidebarWidth }}>
-            {panel === 'files' && <FilesPanel roomName={detail.room.name} />}
+            {panel === 'files' && <FilesPanel roomName={roomName} />}
             {panel === 'search' && <SearchPanel />}
             {panel === 'rooms' && (
               <RoomsPanel
@@ -1110,7 +1371,7 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
               />
             )}
             {panel === 'settings' && <SettingsPanel />}
-            {panel === 'files' && <CollaboratorList />}
+            {panel === 'files' && <CollaboratorList people={activePeople} />}
           </aside>
         )}
 
@@ -1142,13 +1403,33 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
               }}
               duration={outputDuration}
               running={isRunning}
+              focusOutput={runVersion}
             />
           }
+        />
+
+        <ChatPanel
+          roomId={roomId}
+          selfId={detail.identity.id}
+          activeFileId={room.activeFileId}
+          open={chatOpen}
+          onClose={() => setChatOpen(false)}
+          onIncomingMessage={noteIncomingChat}
+          onPresenceChange={updateSocketPeople}
+          onRoomRenamed={setRoomName}
         />
       </div>
 
       {showShare && (
         <ShareDialog roomId={roomId} onClose={() => setShowShare(false)} />
+      )}
+      {showRename && (
+        <RenameRoomDialog
+          roomId={roomId}
+          currentName={roomName}
+          onClose={() => setShowRename(false)}
+          onRenamed={setRoomName}
+        />
       )}
     </div>
   );
@@ -1169,6 +1450,8 @@ function WorkspaceShell({ roomId, detail }: { roomId: string; detail: RoomDetail
       roomId={roomId}
       role={detail.role}
       token={authToken}
+      identity={detail.identity}
+      guest={detail.guest}
     >
       <WorkspaceInner roomId={roomId} detail={detail} />
     </RoomProvider>

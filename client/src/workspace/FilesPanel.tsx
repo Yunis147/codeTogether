@@ -148,7 +148,7 @@ export function FilesPanel({ roomName }: { roomName: string }) {
             ]
               .filter(Boolean)
               .join(' ')}
-            style={{ paddingLeft: 8 + depth * 13 }}
+            style={{ paddingLeft: 10 + depth * 15 }}
             role="treeitem"
             aria-expanded={isFolder ? isOpen : undefined}
             aria-selected={room.activeFileId === node.id}
@@ -196,11 +196,11 @@ export function FilesPanel({ roomName }: { roomName: string }) {
             }}
           >
             <span className="tree-twisty">
-              {isFolder && <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={13} />}
+              {isFolder && <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={15} />}
             </span>
 
             {isFolder ? (
-              <Icon name="folder" size={14} className="tree-folder-icon" />
+              <Icon name="folder" size={16} className="tree-folder-icon" />
             ) : (
               <span className={`file-badge tint-${badge.tint}`}>{badge.badge}</span>
             )}
@@ -228,7 +228,7 @@ export function FilesPanel({ roomName }: { roomName: string }) {
                       setDraft({ parentId: node.id, type: 'FILE' });
                     }}
                   >
-                    <Icon name="filePlus" size={12} />
+                    <Icon name="filePlus" size={15} />
                   </button>
                 )}
                 <button
@@ -240,7 +240,7 @@ export function FilesPanel({ roomName }: { roomName: string }) {
                     setRenamingId(node.id);
                   }}
                 >
-                  <Icon name="pencil" size={12} />
+                  <Icon name="pencil" size={15} />
                 </button>
                 <button
                   type="button"
@@ -251,7 +251,7 @@ export function FilesPanel({ roomName }: { roomName: string }) {
                     confirmAndRemove(node.id, node.name, isFolder);
                   }}
                 >
-                  <Icon name="trash" size={12} />
+                  <Icon name="trash" size={15} />
                 </button>
               </span>
             )}
@@ -272,7 +272,7 @@ export function FilesPanel({ roomName }: { roomName: string }) {
               />
             )}
             {children.length === 0 && draft?.parentId !== node.id && (
-              <p className="tree-empty" style={{ paddingLeft: 8 + (depth + 1) * 13 }}>
+              <p className="tree-empty" style={{ paddingLeft: 10 + (depth + 1) * 15 }}>
                 Empty folder
               </p>
             )}
@@ -359,7 +359,7 @@ export function FilesPanel({ roomName }: { roomName: string }) {
           onClick={() => setSelectedId(null)}
           title="Project root"
         >
-          <Icon name="chevronDown" size={13} />
+          <Icon name="chevronDown" size={15} />
           {roomName}
         </button>
 
@@ -488,10 +488,10 @@ function InlineInput({
   const [value, setValue] = useState(initial);
 
   return (
-    <div className="tree-row is-editing" style={{ paddingLeft: 8 + depth * 13 }}>
+    <div className="tree-row is-editing" style={{ paddingLeft: 10 + depth * 15 }}>
       <span className="tree-twisty" />
       {icon ? (
-        <Icon name="folder" size={14} className="tree-folder-icon" />
+        <Icon name="folder" size={16} className="tree-folder-icon" />
       ) : (
         badge && <span className={`file-badge tint-${badge.tint}`}>{badge.badge}</span>
       )}

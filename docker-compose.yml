@@ -16,5 +16,58 @@ services:
       timeout: 3s
       retries: 30
 
+  judge0-db:
+    image: postgres:16.2
+    restart: unless-stopped
+    env_file: ./judge0.conf
+    environment:
+      POSTGRES_HOST: judge0-db
+    volumes:
+      - judge0_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U judge0 -d judge0"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  judge0-redis:
+    image: redis:7.2.4
+    restart: unless-stopped
+    env_file: ./judge0.conf
+    command: ["bash", "-c", "docker-entrypoint.sh --appendonly no --requirepass $$REDIS_PASSWORD"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    ports:
+      - "127.0.0.1:2358:2358"
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+
+  judge0-workers:
+    image: judge0/judge0:1.13.1
+    restart: unless-stopped
+    privileged: true
+    command: ["./scripts/workers"]
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  judge0_postgres_data:

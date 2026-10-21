@@ -21,6 +21,10 @@ export default defineConfig({
         target: 'ws://localhost:1234',
         ws: true,
       },
+      '/socket.io': {
+        target: 'http://localhost:3001',
+        ws: true,
+      },
     },
   },
 });

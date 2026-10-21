@@ -9,6 +9,10 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   PORT: z.coerce.number().int().positive().default(3001),
   SYNC_PORT: z.coerce.number().int().positive().default(1234),
+  JUDGE0_URL: z.string().url().default('http://localhost:2358'),
+  // Matches the local compose configuration. Deployments can replace this with
+  // their own runner credential without exposing it to browser clients.
+  JUDGE0_AUTH_TOKEN: z.string().min(1).default('codetogether-local-runner-token'),
   // Long enough that a leaked token cannot be brute-forced. There is deliberately
   // no default: a predictable signing key would let anyone mint a session.
   JWT_SECRET: z.string().min(32),

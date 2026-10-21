@@ -12,6 +12,8 @@ export type ZipEntry = {
   /** Forward-slash separated path. A trailing slash marks a directory. */
   path: string;
   content?: string | Buffer;
+  /** Unix mode stored in the archive. Scripts need the executable bit for Judge0. */
+  mode?: number;
 };
 
 const LOCAL_FILE_HEADER = 0x04034b50;
@@ -19,11 +21,13 @@ const CENTRAL_FILE_HEADER = 0x02014b50;
 const END_OF_CENTRAL_DIRECTORY = 0x06054b50;
 
 const VERSION = 20;
+// The high byte identifies Unix as the originating system, which makes the
+// executable bits on Judge0's generated compile/run scripts meaningful.
+const VERSION_MADE_BY_UNIX = (3 << 8) | VERSION;
 const METHOD_STORE = 0;
 const METHOD_DEFLATE = 8;
 
 /** Unix mode in the high 16 bits; the low 0x10 bit is the MS-DOS directory flag. */
-const MODE_FILE = 0o100644 << 16;
 const MODE_DIRECTORY = (0o040755 << 16) | 0x10;
 
 function dosTimestamp(when: Date): { time: number; date: number } {
@@ -78,7 +82,7 @@ export function createZip(entries: ZipEntry[], now = new Date()): Buffer {
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(CENTRAL_FILE_HEADER, 0);
-    central.writeUInt16LE(VERSION, 4); // version made by
+    central.writeUInt16LE(VERSION_MADE_BY_UNIX, 4); // version made by (Unix)
     central.writeUInt16LE(VERSION, 6); // version needed to extract
     central.writeUInt16LE(0, 8);
     central.writeUInt16LE(method, 10);
@@ -92,7 +96,13 @@ export function createZip(entries: ZipEntry[], now = new Date()): Buffer {
     central.writeUInt16LE(0, 32); // comment length
     central.writeUInt16LE(0, 34); // disk number where the file starts
     central.writeUInt16LE(0, 36); // internal attributes
-    central.writeUInt32LE(isDirectory ? MODE_DIRECTORY : MODE_FILE, 38);
+    // Bitwise shifts in JavaScript return signed 32-bit integers. Regular
+    // Unix file modes set bit 31 here, so multiply to retain the unsigned ZIP
+    // external-attributes value expected by Buffer.writeUInt32LE.
+    central.writeUInt32LE(
+      isDirectory ? MODE_DIRECTORY : (entry.mode ?? 0o100644) * 0x1_0000,
+      38,
+    );
     central.writeUInt32LE(offset, 42);
     directory.push(central, name);
 

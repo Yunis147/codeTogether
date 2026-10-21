@@ -1,4 +1,4 @@
-import { ROLE_LABEL } from '../types';
+import { ROLE_LABEL, type Person } from '../types';
 import { Avatar } from '../ui/Avatar';
 import { Icon } from '../ui/Icon';
 import { useRoom } from './RoomProvider';
@@ -8,23 +8,24 @@ import { pathOf } from './tree';
  * Who is in the room right now, straight from Yjs awareness. Clicking someone
  * jumps to the file they are in; Follow keeps this view tracking them.
  */
-export function CollaboratorList() {
+export function CollaboratorList({ people: suppliedPeople }: { people?: Person[] }) {
   const room = useRoom();
+  const people = suppliedPeople ?? room.people;
 
   return (
     <section className="collaborators">
       <header>
-        <strong>Active collaborators</strong>
-        <span className="pill">{room.people.length}</span>
+        <strong>Active users</strong>
+        <span className="pill">{people.length}</span>
       </header>
 
-      {room.people.length === 0 && (
+      {people.length === 0 && (
         <p className="panel-note">
           {room.connection === 'connecting' ? 'Connecting…' : 'No collaborators online'}
         </p>
       )}
 
-      {room.people.map((person) => {
+      {people.map((person) => {
         const where = person.fileId ? pathOf(room.tree, person.fileId) : '';
         const following = room.followingId === person.id;
 
@@ -51,9 +52,10 @@ export function CollaboratorList() {
               </span>
             </button>
 
-            {person.isYou ? (
+            {(person.isYou || person.role === 'OWNER') && (
               <em className="role-chip">{ROLE_LABEL[person.role]}</em>
-            ) : (
+            )}
+            {!person.isYou && (
               <button
                 type="button"
                 className={`follow-button${following ? ' is-on' : ''}`}

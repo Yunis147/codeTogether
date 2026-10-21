@@ -4,6 +4,7 @@ import { NodeType, Role } from '@prisma/client';
 import * as Y from 'yjs';
 import { z } from 'zod';
 import { AccessError, ROLE_RANK, type RoomAccess } from '../access.js';
+import { executeProject, type RunnableLanguage } from '../judge0.js';
 import { createZip, type ZipEntry } from '../lib/zip.js';
 import { prisma } from '../prisma.js';
 import {
@@ -14,7 +15,8 @@ import {
   createStarterTree,
 } from '../sync/tree.js';
 import { resetRoomIdentityConnections, resetRoomShareLinkConnections } from '../sync/index.js';
-import { firstIssue, withRoomAccess, withUser } from './middleware.js';
+import { announceRoomRename } from '../chat.js';
+import { firstIssue, rateLimit, withRoomAccess, withUser } from './middleware.js';
 
 export const roomsRouter = Router();
 
@@ -48,6 +50,81 @@ function requireAccount(access: RoomAccess, action: string): void {
   if (access.guest) {
     throw new AccessError(`Sign in to ${action}.`, 403);
   }
+}
+
+function requireEditor(access: RoomAccess): void {
+  if (access.role === Role.VIEWER) {
+    throw new AccessError('Viewers cannot run code. Ask the room owner for editor access.', 403);
+  }
+}
+
+const MAX_RUN_FILES = 100;
+const MAX_RUN_FILE_BYTES = 128 * 1024;
+const MAX_RUN_PROJECT_BYTES = 1024 * 1024;
+const MAX_RUN_STDIN_BYTES = 64 * 1024;
+
+const runFileSchema = z.object({
+  id: z.string().min(1).max(100),
+  path: z
+    .string()
+    .min(1)
+    .max(400)
+    .refine(
+      (value) =>
+        value
+          .split('/')
+          .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..' && !/[\\\0]/.test(segment)),
+      'Each file must stay inside the project folder.',
+    ),
+  language: z.string().max(40).nullable(),
+  // Only open documents are included by the client. Closed documents are read
+  // from the room mirror, keeping a run current without loading every Yjs doc.
+  content: z.string().max(MAX_RUN_FILE_BYTES).optional(),
+});
+
+const runSchema = z
+  .object({
+    entryFileId: z.string().min(1).max(100),
+    stdin: z.string().max(MAX_RUN_STDIN_BYTES),
+    files: z.array(runFileSchema).min(1, 'Add a source file before running.').max(MAX_RUN_FILES),
+  })
+  .superRefine((value, context) => {
+    const fileIds = new Set<string>();
+    const paths = new Set<string>();
+    let suppliedBytes = 0;
+
+    for (const [index, file] of value.files.entries()) {
+      if (fileIds.has(file.id)) {
+        context.addIssue({ code: 'custom', path: ['files', index, 'id'], message: 'Each file may appear only once.' });
+      }
+      if (paths.has(file.path)) {
+        context.addIssue({ code: 'custom', path: ['files', index, 'path'], message: 'Each project path must be unique.' });
+      }
+      fileIds.add(file.id);
+      paths.add(file.path);
+      suppliedBytes += Buffer.byteLength(file.content ?? '', 'utf8');
+    }
+
+    if (!fileIds.has(value.entryFileId)) {
+      context.addIssue({ code: 'custom', path: ['entryFileId'], message: 'Choose a file in this project to run.' });
+    }
+    if (suppliedBytes > MAX_RUN_PROJECT_BYTES) {
+      context.addIssue({ code: 'custom', path: ['files'], message: 'Open-file content exceeds the 1 MB run limit.' });
+    }
+  });
+
+function runnableLanguage(language: string | null, path: string): RunnableLanguage | null {
+  if (language === 'python' || /\.py$/i.test(path)) return 'python';
+  if (language === 'java' || /\.java$/i.test(path)) return 'java';
+  if (language === 'javascript' || /\.(?:cjs|js|mjs)$/i.test(path)) return 'javascript';
+  if (language === 'typescript' || /\.ts$/i.test(path)) return 'typescript';
+  if (language === 'c' || /\.c$/i.test(path)) return 'c';
+  if (language === 'cpp' || /\.(?:cc|cpp|cxx)$/i.test(path)) return 'cpp';
+  return null;
+}
+
+function rootScriptCollision(path: string): boolean {
+  return path === 'compile' || path === 'run';
 }
 
 roomsRouter.get(
@@ -171,6 +248,8 @@ roomsRouter.patch(
       where: { id: access.roomId },
       data: { name: parsed.data.name },
     });
+
+    await announceRoomRename(access.roomId, access, room.name);
 
     response.json({ room: { id: room.id, name: room.name } });
   }),
@@ -427,6 +506,70 @@ roomsRouter.get(
       .filter((file) => file.matches.length > 0);
 
     response.json({ query, results });
+  }),
+);
+
+roomsRouter.post(
+  '/:roomId/run',
+  rateLimit({ windowMs: 60_000, max: 20 }),
+  withRoomAccess(async (access, request, response) => {
+    requireEditor(access);
+
+    const parsed = runSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: firstIssue(parsed.error) });
+      return;
+    }
+
+    if (parsed.data.files.some((file) => rootScriptCollision(file.path))) {
+      response.status(400).json({ error: 'Rename a root file called compile or run before executing this project.' });
+      return;
+    }
+
+    const knownFiles = await prisma.file.findMany({
+      where: { roomId: access.roomId, id: { in: parsed.data.files.map((file) => file.id) } },
+      select: { id: true, type: true, language: true, textContent: true },
+    });
+    const knownById = new Map(knownFiles.map((file) => [file.id, file]));
+
+    const entry = parsed.data.files.find((file) => file.id === parsed.data.entryFileId);
+    if (!entry) {
+      response.status(400).json({ error: 'Choose a file in this project to run.' });
+      return;
+    }
+
+    const storedEntry = knownById.get(entry.id);
+    if (storedEntry?.type === NodeType.FOLDER) {
+      response.status(400).json({ error: 'Choose a source file to run.' });
+      return;
+    }
+
+    const language = runnableLanguage(storedEntry?.language ?? entry.language, entry.path);
+    if (!language) {
+      response.status(400).json({ error: 'Run supports Python, JavaScript, TypeScript, C, C++, and Java files.' });
+      return;
+    }
+
+    const files = parsed.data.files.map((file) => ({
+      path: file.path,
+      content: file.content ?? knownById.get(file.id)?.textContent ?? '',
+    }));
+    const projectBytes = files.reduce((total, file) => total + Buffer.byteLength(file.content, 'utf8'), 0);
+    if (projectBytes > MAX_RUN_PROJECT_BYTES) {
+      response.status(400).json({ error: 'This project exceeds the 1 MB run limit.' });
+      return;
+    }
+
+    const entrySource = files.find((file) => file.path === entry.path)?.content ?? '';
+    const result = await executeProject({
+      language,
+      entryPath: entry.path,
+      entrySource,
+      files,
+      stdin: parsed.data.stdin,
+    });
+
+    response.json({ result });
   }),
 );
 

@@ -197,7 +197,7 @@ export function RoomsPanel({
                 title="Delete room"
                 onClick={(e) => void deleteRoom(room.id, e)}
               >
-                <Icon name="trash" size={13} />
+                <Icon name="trash" size={16} />
               </button>
             ) : (
               <button
@@ -206,7 +206,7 @@ export function RoomsPanel({
                 title="Leave room"
                 onClick={(e) => void leaveRoom(room.id, e)}
               >
-                <Icon name="logout" size={13} />
+                <Icon name="logout" size={16} />
               </button>
             )}
           </div>

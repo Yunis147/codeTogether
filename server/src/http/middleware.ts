@@ -6,6 +6,7 @@ import {
   roomAccessFromRequest,
   type RoomAccess,
 } from '../access.js';
+import { Judge0Error } from '../judge0.js';
 import type { UserPayload } from '../tokens.js';
 
 type Handler = (request: Request, response: Response) => Promise<void> | void;
@@ -85,6 +86,11 @@ export function errorHandler(
   }
 
   if (error instanceof AccessError) {
+    response.status(error.status).json({ error: error.message });
+    return;
+  }
+
+  if (error instanceof Judge0Error) {
     response.status(error.status).json({ error: error.message });
     return;
   }

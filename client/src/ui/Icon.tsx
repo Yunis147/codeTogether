@@ -11,6 +11,7 @@ const PATHS = {
   settings:
     'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6m7.4 3c0 .5 0 1-.1 1.4l2 1.6-2 3.4-2.4-1a7.4 7.4 0 0 1-2.4 1.4L14 22h-4l-.5-2.2a7.4 7.4 0 0 1-2.4-1.4l-2.4 1-2-3.4 2-1.6a8 8 0 0 1 0-2.8l-2-1.6 2-3.4 2.4 1a7.4 7.4 0 0 1 2.4-1.4L10 2h4l.5 2.2a7.4 7.4 0 0 1 2.4 1.4l2.4-1 2 3.4-2 1.6c.1.4.1.9.1 1.4',
   chat: 'M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l-1-4.5A7.5 7.5 0 1 1 20 11.5M8 10h8M8 13.5h5',
+  send: 'm5 4 15 8-15 8 2.5-8zM7.5 12H20',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8m-7 8a7 7 0 0 1 14 0',
   plus: 'M12 5v14M5 12h14',
   filePlus: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zm0 0v5h5M12 11v6M9 14h6',
@@ -53,7 +54,7 @@ export function Icon({ name, size = 17, ...rest }: IconProps) {
       height={size}
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.7}
+      strokeWidth={1.85}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

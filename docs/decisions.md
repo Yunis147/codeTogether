@@ -131,3 +131,38 @@ Format:
 - Decision: ordinary account sign-in and sign-up let the root router select or create a default room. Authentication only navigates directly when it returns a guest-linked room id.
 - Why: overlapping workspace-entry effects could create two rooms for a new account and leave an invited guest in the first room while the owner was moved to the second.
 - Alternatives: keeping several independently triggered entry effects and trying to coordinate their asynchronous requests with component-local flags.
+
+## 2026-10-20: Judge0 CE is the isolated Phase 5 runner
+- Decision: run Python and Java projects through a local Dockerized Judge0 CE instance, accessed only by a role-checked and rate-limited Express route.
+- Why: Judge0 provides the sandbox required by the project rules. The API receives a bounded project snapshot, writes generated compile/run scripts into a ZIP archive, and sends it to Judge0's multi-file-program language. Node never evaluates workspace code.
+- Alternatives: running a child process on the application server, which violates the safety boundary; using only single-file Judge0 requests, which cannot compile a multi-file Java workspace.
+
+## 2026-10-20: Extend multi-file execution to six starter languages
+- Decision: support Python, JavaScript, TypeScript, C, C++, and Java using generated language-specific scripts in the same Judge0 multi-file archive.
+- Why: each language needs a different entry command or build step, while one bounded project snapshot and the existing access checks keep the execution flow consistent.
+- Alternatives: accepting only single-file source submissions for the added languages, which would make imports and separately stored source files unavailable.
+
+## 2026-10-20: Keep C and C++ execution to one selected source file
+- Decision: compile only the selected C or C++ source file, while retaining multi-file execution for Python, JavaScript, TypeScript, and Java.
+- Why: this makes each C or C++ file independently runnable and avoids linker conflicts when a collaborative room contains several examples with their own `main` function.
+- Alternatives: linking every matching C or C++ source file, which requires collaborators to coordinate one shared program entry point.
+
+## 2026-10-20: Persist room chat through Socket.IO
+- Decision: use one Socket.IO chat connection per open workspace, store chat messages in PostgreSQL, and retain the latest 100 messages when a participant joins.
+- Why: Socket.IO gives guests and signed-in users live room messages while the database preserves useful conversation across reconnects and refreshes. Room access is checked at join and again before every message is written.
+- Alternatives: polling a REST endpoint, which would add avoidable message delay; keeping chat only in browser memory, which would erase the conversation on refresh.
+
+## 2026-10-20: Parse named cookie credentials for Socket.IO
+- Decision: extract the `ct_session` value from Socket.IO's raw Cookie header before resolving room access, while retaining bearer tokens for guests.
+- Why: Socket.IO exposes the complete Cookie header rather than one cookie value. Passing that header directly to JWT verification made signed-in owners appear unauthenticated, even though their browser session was valid.
+- Alternatives: moving the signed-in session JWT into client JavaScript, which would defeat the httpOnly cookie protection; requiring every user to use a guest-style bearer token.
+
+## 2026-10-20: Announce room presence after sync authentication
+- Decision: send the room awareness state again after Hocuspocus authenticates and completes initial sync.
+- Why: this makes the server-stamped identity available to existing participants even when a browser announced itself during the opening handshake.
+- Alternatives: relying only on the first local awareness event, whose timing can precede document authentication.
+
+## 2026-10-20: Use Socket.IO for the active-room roster
+- Decision: expose the active-user list through the authenticated Socket.IO room connection, while retaining Yjs awareness for cursors and follow state.
+- Why: every open workspace already keeps an authenticated Socket.IO connection for chat, and its room membership supplies a reliable full roster when the independently initialized tree-document awareness handshake has not completed for every browser.
+- Alternatives: deriving the visible roster solely from tree awareness, which could leave a browser showing only its own participant state.

@@ -15,8 +15,17 @@ type PreferencesValue = {
 const PreferencesContext = createContext<PreferencesValue | null>(null);
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useLocalSetting<Theme>('theme', 'dark');
+  const [theme, setTheme] = useLocalSetting<Theme>('theme', 'light');
+  const [themePreferenceVersion, setThemePreferenceVersion] = useLocalSetting<number>('themePreferenceVersion', 1);
   const [fontSize, setFontSize] = useLocalSetting<number>('fontSize', 14);
+
+  // Earlier builds defaulted to dark. Move that old default to light once,
+  // while later choices continue to persist normally.
+  useEffect(() => {
+    if (themePreferenceVersion >= 2) return;
+    setTheme('light');
+    setThemePreferenceVersion(2);
+  }, [setTheme, setThemePreferenceVersion, themePreferenceVersion]);
 
   // Every colour in the app is a CSS variable, so switching theme is just
   // swapping which set of values is in scope.

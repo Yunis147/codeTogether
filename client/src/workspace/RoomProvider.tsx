@@ -104,10 +104,12 @@ type RoomProviderProps = {
   roomId: string;
   role: Role;
   token: string | null;
+  identity: { id: string; name: string; color: string };
+  guest: boolean;
   children: ReactNode;
 };
 
-export function RoomProvider({ roomId, role, token, children }: RoomProviderProps) {
+export function RoomProvider({ roomId, role, token, identity, guest, children }: RoomProviderProps) {
   const [serverReadOnly, setServerReadOnly] = useState(role === 'VIEWER');
   const readOnly = role === 'VIEWER' || serverReadOnly;
 
@@ -202,6 +204,7 @@ export function RoomProvider({ roomId, role, token, children }: RoomProviderProp
     if (!websocket) return;
 
     const doc = new Y.Doc();
+    let publishPresence: (() => void) | null = null;
     const provider = new HocuspocusProvider({
       websocketProvider: websocket,
       name: treeDocumentName(roomId),
@@ -213,8 +216,14 @@ export function RoomProvider({ roomId, role, token, children }: RoomProviderProp
         if (scope === 'readonly') {
           setServerReadOnly(true);
         }
+        // An awareness update sent before authentication is not useful for
+        // server-stamped identity. Announce once the connection is authorised.
+        queueMicrotask(() => publishPresence?.());
       },
-      onSynced: () => setConnection('connected'),
+      onSynced: () => {
+        setConnection('connected');
+        publishPresence?.();
+      },
       onAuthenticationFailed: ({ reason }) => {
         setConnection('disconnected');
         setAuthError(reason || 'You no longer have access to this room.');
@@ -232,6 +241,23 @@ export function RoomProvider({ roomId, role, token, children }: RoomProviderProp
     syncTree();
 
     const awareness = provider.awareness;
+    publishPresence = () => {
+      if (!awareness) return;
+
+      // The server replaces `user` with its authenticated identity before
+      // peers see it, so this remains safe even if a client is modified.
+      awareness.setLocalState({
+        ...awareness.getLocalState(),
+        user: {
+          id: identity.id,
+          name: identity.name,
+          color: identity.color,
+          role,
+          guest,
+        },
+      });
+    };
+    publishPresence();
 
     const syncPeople = (): void => {
       if (!awareness) return;
@@ -290,7 +316,7 @@ export function RoomProvider({ roomId, role, token, children }: RoomProviderProp
       unsynced.delete('tree');
       recomputeUnsynced();
     };
-  }, [roomId, token, reportUnsynced, recomputeUnsynced, refreshCursorStyles]);
+  }, [roomId, token, identity, guest, role, reportUnsynced, recomputeUnsynced, refreshCursorStyles]);
 
   // Open the first file once the tree arrives, so the editor is never empty.
   useEffect(() => {

@@ -50,8 +50,8 @@ process.on('SIGINT', () => stop());
 process.on('SIGTERM', () => stop());
 
 try {
-  console.log('Starting PostgreSQL with Docker Compose...');
-  await run(compose, ['compose', 'up', '-d', '--wait', 'db']);
+  console.log('Starting PostgreSQL and Judge0 with Docker Compose...');
+  await run(compose, ['compose', 'up', '-d', '--wait', 'db', 'judge0-server', 'judge0-workers']);
   console.log('Preparing the database schema...');
   await run(npm, ['run', 'db:push']);
   console.log('Starting the API and web client...');

@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { currentUser, strongerRole } from '../access.js';
+import { currentUser } from '../access.js';
 import { prisma } from '../prisma.js';
+import { resetRoomIdentityConnections } from '../sync/index.js';
 import { signToken } from '../tokens.js';
 import { firstIssue, rateLimit } from './middleware.js';
 
@@ -63,13 +64,20 @@ shareRouter.post('/:token/join', limiter, async (request, response) => {
       where: { userId_roomId: { userId: user.userId, roomId: link.roomId } },
     });
 
-    const role = existing ? strongerRole(existing.role, link.role) : link.role;
+    // The link being used defines access for this join. In particular, someone
+    // who previously used an editor invite must not keep editing after joining
+    // through a viewer invite. The room owner always retains owner access.
+    const role = existing?.role === 'OWNER' ? existing.role : link.role;
 
     await prisma.membership.upsert({
       where: { userId_roomId: { userId: user.userId, roomId: link.roomId } },
       create: { userId: user.userId, roomId: link.roomId, role },
       update: { role },
     });
+
+    if (existing && existing.role !== role) {
+      resetRoomIdentityConnections(link.roomId, user.userId);
+    }
 
     response.json({
       room: { id: link.room.id, name: link.room.name, ownerName: link.room.owner.name },

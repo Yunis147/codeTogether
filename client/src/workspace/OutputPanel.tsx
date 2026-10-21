@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Icon } from '../ui/Icon';
 
 export type LogEntry = {
@@ -24,6 +24,7 @@ export function OutputPanel({
   onClear,
   duration,
   running,
+  focusOutput,
 }: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -34,8 +35,14 @@ export function OutputPanel({
   onClear: () => void;
   duration: string;
   running: boolean;
+  /** Bumps when a run starts so the result is always visible. */
+  focusOutput: number;
 }) {
   const [tab, setTab] = useState<OutputTab>('output');
+
+  useEffect(() => {
+    if (focusOutput > 0) setTab('output');
+  }, [focusOutput]);
 
   return (
     <section className={`output-drawer${collapsed ? ' is-collapsed' : ''}`}>
@@ -78,6 +85,7 @@ export function OutputPanel({
 
         <div className="output-drawer-actions">
           <span className="output-duration">
+            {running && <Icon name="refresh" size={12} className="spin" />}
             {running ? 'Running…' : duration}
           </span>
           <button

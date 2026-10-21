@@ -31,9 +31,8 @@ export class AccessError extends Error {
   }
 }
 
-/** Reads one cookie out of the raw headers of a WebSocket upgrade request. */
-export function cookieFromHeaders(headers: Headers, name: string): string | null {
-  const header = headers.get('cookie');
+/** Reads one named cookie from a raw Cookie header. */
+export function cookieFromHeader(header: string | null | undefined, name: string): string | null {
   if (!header) return null;
 
   const match = header
@@ -42,6 +41,11 @@ export function cookieFromHeaders(headers: Headers, name: string): string | null
     .find((part) => part.startsWith(`${name}=`));
 
   return match ? decodeURIComponent(match.slice(name.length + 1)) : null;
+}
+
+/** Reads one cookie out of the raw headers of a Hocuspocus WebSocket request. */
+export function cookieFromHeaders(headers: Headers, name: string): string | null {
+  return cookieFromHeader(headers.get('cookie'), name);
 }
 
 /** Bearer token, used by guests who have no cookie or callers passing auth headers. */

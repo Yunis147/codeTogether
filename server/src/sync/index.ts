@@ -48,6 +48,10 @@ export const syncServer = new Server<SyncContext>({
     if (!context) return;
 
     for (const state of states.values()) {
+      // A client sends awareness remove entries as `null`; leave them intact
+      // so peers can remove the departed participant.
+      if (state === null) continue;
+
       state.user = {
         id: context.identityId,
         name: context.name,
