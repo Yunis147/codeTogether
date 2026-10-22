@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { navigate } from '../hooks/useRoute';
 import { useSession } from '../session/SessionProvider';
 import { ROLE_LABEL, type RoomSummary } from '../types';
 import { Icon } from '../ui/Icon';
+import { Modal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+import { RenameRoomDialog } from './RenameRoomDialog';
 
 type RoomsResponse = { owned: RoomSummary[]; shared: RoomSummary[] };
 
@@ -50,16 +52,43 @@ export function relativeTime(iso: string): string {
 
 export function RoomsPanel({
   currentRoomId,
+  currentRoomName,
   onSelectRoom,
+  onRenameCurrentRoom,
 }: {
   currentRoomId: string;
+  currentRoomName?: string;
   onSelectRoom?: () => void;
+  onRenameCurrentRoom?: (name: string) => void;
 }) {
   const { user } = useSession();
-  const { rooms, loading, reload } = useRooms(Boolean(user));
+  const { rooms: fetchedRooms, loading, reload } = useRooms(Boolean(user));
   const toast = useToast();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
+  const [renamingRoom, setRenamingRoom] = useState<{ id: string; name: string } | null>(null);
+  const [pendingDeleteRoom, setPendingDeleteRoom] = useState<{ id: string; name: string } | null>(null);
+  const [pendingLeaveRoom, setPendingLeaveRoom] = useState<{ id: string; name: string } | null>(null);
+  const [deletingRoom, setDeletingRoom] = useState(false);
+  const [leavingRoom, setLeavingRoom] = useState(false);
+
+  // Patch the fetched room list with the live room name so a rename in the
+  // topbar is immediately reflected here without a network round-trip.
+  const rooms = useMemo((): RoomsResponse => {
+    if (!currentRoomName) return fetchedRooms;
+    return {
+      owned: fetchedRooms.owned.map((room) =>
+        room.id === currentRoomId ? { ...room, name: currentRoomName } : room,
+      ),
+      shared: fetchedRooms.shared.map((room) =>
+        room.id === currentRoomId ? { ...room, name: currentRoomName } : room,
+      ),
+    };
+  }, [currentRoomId, currentRoomName, fetchedRooms]);
+
+  useEffect(() => {
+    if (user) void reload();
+  }, [currentRoomName, user, reload]);
 
   const handleOpenRoom = (targetRoomId: string) => {
     localStorage.setItem('codetogether.lastRoomId', targetRoomId);
@@ -118,15 +147,17 @@ export function RoomsPanel({
     }
   };
 
-  const deleteRoom = async (roomId: string, e: React.MouseEvent): Promise<void> => {
-    e.stopPropagation();
-    if (!window.confirm('Delete this room? This cannot be undone.')) return;
+  const confirmDeleteRoom = async (): Promise<void> => {
+    if (!pendingDeleteRoom) return;
+    const targetId = pendingDeleteRoom.id;
+    setDeletingRoom(true);
     try {
-      await api(`/api/rooms/${roomId}`, { method: 'DELETE' });
+      await api(`/api/rooms/${targetId}`, { method: 'DELETE' });
       toast('Room deleted.');
+      setPendingDeleteRoom(null);
       await reload();
-      if (roomId === currentRoomId) {
-        const remaining = rooms.owned.filter((r) => r.id !== roomId);
+      if (targetId === currentRoomId) {
+        const remaining = rooms.owned.filter((r) => r.id !== targetId);
         if (remaining.length > 0) {
           navigate({ name: 'room', roomId: remaining[0].id });
         } else {
@@ -139,18 +170,22 @@ export function RoomsPanel({
       }
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not delete room.', 'error');
+    } finally {
+      setDeletingRoom(false);
     }
   };
 
-  const leaveRoom = async (roomId: string, e: React.MouseEvent): Promise<void> => {
-    e.stopPropagation();
-    if (!window.confirm('Leave this room?')) return;
+  const confirmLeaveRoom = async (): Promise<void> => {
+    if (!pendingLeaveRoom) return;
+    const targetId = pendingLeaveRoom.id;
+    setLeavingRoom(true);
     try {
-      await api(`/api/rooms/${roomId}/leave`, { method: 'POST' });
+      await api(`/api/rooms/${targetId}/leave`, { method: 'POST' });
       toast('Left room.');
+      setPendingLeaveRoom(null);
       await reload();
-      if (roomId === currentRoomId) {
-        const remaining = rooms.owned[0] ?? rooms.shared.filter((r) => r.id !== roomId)[0];
+      if (targetId === currentRoomId) {
+        const remaining = rooms.owned[0] ?? rooms.shared.filter((r) => r.id !== targetId)[0];
         if (remaining) {
           navigate({ name: 'room', roomId: remaining.id });
         } else {
@@ -163,6 +198,8 @@ export function RoomsPanel({
       }
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not leave room.', 'error');
+    } finally {
+      setLeavingRoom(false);
     }
   };
 
@@ -191,20 +228,39 @@ export function RoomsPanel({
             </span>
             {room.id === currentRoomId && <span className="room-row-dot" aria-label="Open" />}
             {room.role === 'OWNER' ? (
-              <button
-                type="button"
-                className="icon-button room-action is-danger"
-                title="Delete room"
-                onClick={(e) => void deleteRoom(room.id, e)}
-              >
-                <Icon name="trash" size={16} />
-              </button>
+              <div className="room-row-actions" style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                <button
+                  type="button"
+                  className="icon-button room-action"
+                  title="Rename room"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingRoom({ id: room.id, name: room.name });
+                  }}
+                >
+                  <Icon name="pencil" size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button room-action is-danger"
+                  title="Delete room"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPendingDeleteRoom({ id: room.id, name: room.name });
+                  }}
+                >
+                  <Icon name="trash" size={16} />
+                </button>
+              </div>
             ) : (
               <button
                 type="button"
                 className="icon-button room-action"
                 title="Leave room"
-                onClick={(e) => void leaveRoom(room.id, e)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPendingLeaveRoom({ id: room.id, name: room.name });
+                }}
               >
                 <Icon name="logout" size={16} />
               </button>
@@ -235,22 +291,32 @@ export function RoomsPanel({
       </header>
 
       {creating && (
-        <div className="panel-pad">
+        <div className="room-create-card">
+          <span className="room-create-title">Create new room</span>
           <input
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="e.g. algo-playground"
+            placeholder="Room name, e.g. algo-playground"
             autoFocus
+            maxLength={60}
             onKeyDown={(event) => {
               if (event.key === 'Enter') void create();
               else if (event.key === 'Escape') setCreating(false);
             }}
           />
-          <div className="button-row">
-            <button type="button" className="button-primary" onClick={() => void create()}>
-              Create room
+          <div className="room-create-actions">
+            <button
+              type="button"
+              className="button-primary button-sm"
+              onClick={() => void create()}
+            >
+              Create
             </button>
-            <button type="button" className="button-quiet" onClick={() => setCreating(false)}>
+            <button
+              type="button"
+              className="button-quiet button-sm"
+              onClick={() => setCreating(false)}
+            >
               Cancel
             </button>
           </div>
@@ -267,6 +333,98 @@ export function RoomsPanel({
           </>
         )}
       </div>
+
+      {renamingRoom && (
+        <RenameRoomDialog
+          roomId={renamingRoom.id}
+          currentName={renamingRoom.name}
+          onClose={() => setRenamingRoom(null)}
+          onRenamed={(newName) => {
+            if (renamingRoom.id === currentRoomId) {
+              onRenameCurrentRoom?.(newName);
+            }
+            void reload();
+          }}
+        />
+      )}
+
+      {pendingDeleteRoom && (
+        <Modal
+          title="Delete room?"
+          onClose={() => setPendingDeleteRoom(null)}
+          width={400}
+        >
+          <div className="delete-confirm">
+            <div className="delete-confirm-icon">
+              <Icon name="trash" size={18} />
+            </div>
+            <div>
+              <p className="delete-confirm-title">
+                Delete <b>{pendingDeleteRoom.name}</b>?
+              </p>
+              <p className="muted">
+                All files, chat messages, and settings in this room will be permanently destroyed. This cannot be undone.
+              </p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button
+                type="button"
+                className="button-quiet"
+                onClick={() => setPendingDeleteRoom(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                disabled={deletingRoom}
+                onClick={() => void confirmDeleteRoom()}
+              >
+                {deletingRoom ? 'Deleting…' : 'Delete room'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {pendingLeaveRoom && (
+        <Modal
+          title="Leave room?"
+          onClose={() => setPendingLeaveRoom(null)}
+          width={400}
+        >
+          <div className="delete-confirm">
+            <div className="delete-confirm-icon">
+              <Icon name="logout" size={18} />
+            </div>
+            <div>
+              <p className="delete-confirm-title">
+                Leave <b>{pendingLeaveRoom.name}</b>?
+              </p>
+              <p className="muted">
+                You will be removed as a member. You will need an invite link to rejoin.
+              </p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button
+                type="button"
+                className="button-quiet"
+                onClick={() => setPendingLeaveRoom(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                disabled={leavingRoom}
+                onClick={() => void confirmLeaveRoom()}
+              >
+                {leavingRoom ? 'Leaving…' : 'Leave room'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

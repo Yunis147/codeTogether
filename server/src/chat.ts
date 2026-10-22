@@ -2,6 +2,7 @@ import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import { z } from 'zod';
 import { AccessError, cookieFromHeader, resolveRoomAccess, type RoomAccess } from './access.js';
+import { env } from './env.js';
 import { prisma } from './prisma.js';
 import { SESSION_COOKIE } from './tokens.js';
 
@@ -84,13 +85,6 @@ function errorMessage(error: unknown): string {
   return 'Chat is temporarily unavailable.';
 }
 
-async function announceActivity(roomId: string, access: RoomAccess, content: string): Promise<void> {
-  const message = await prisma.chatMessage.create({
-    data: { roomId, authorId: access.identityId, authorName: access.name, authorColor: access.color, content },
-  });
-  activeChatServer?.to(roomChannel(roomId)).emit('chat:message', asMessage(message));
-}
-
 function roomPresence(access: RoomAccess, fileId: string | null): RoomPresence {
   return {
     id: access.identityId,
@@ -121,6 +115,10 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
   const io = new Server<ClientToServerEvents, ServerToClientEvents, object, SocketData>(httpServer, {
     path: '/socket.io',
     serveClient: false,
+    cors: {
+      origin: env.CLIENT_ORIGIN ? [env.CLIENT_ORIGIN, 'http://localhost:5173'] : true,
+      credentials: true,
+    },
   });
   activeChatServer = io;
 
@@ -155,10 +153,6 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
         const access = await currentAccess(socket, parsed.data.roomId);
         const previous = socket.data.session;
         if (previous) socket.leave(roomChannel(previous.roomId));
-        const wasPresent = Array.from(io.sockets.adapter.rooms.get(roomChannel(access.roomId)) ?? []).some((socketId) => {
-          const peer = io.sockets.sockets.get(socketId);
-          return peer?.data.session?.access.identityId === access.identityId;
-        });
 
         socket.data.session = {
           roomId: access.roomId,
@@ -175,7 +169,6 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
         });
         socket.emit('chat:history', messages.reverse().map(asMessage));
         broadcastPresence(access.roomId);
-        if (!wasPresent) void announceActivity(access.roomId, access, 'joined the room.');
         acknowledge({ ok: true });
       } catch (error) {
         acknowledge({ ok: false, error: errorMessage(error) });
@@ -234,18 +227,74 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
 
     socket.on('disconnect', () => {
       const session = socket.data.session;
-      if (session) queueMicrotask(() => {
-        broadcastPresence(session.roomId);
-        const stillPresent = Array.from(io.sockets.adapter.rooms.get(roomChannel(session.roomId)) ?? []).some((socketId) => {
-          const peer = io.sockets.sockets.get(socketId);
-          return peer?.data.session?.access.identityId === session.access.identityId;
-        });
-        if (!stillPresent) void announceActivity(session.roomId, session.access, 'left the room.');
-      });
+      if (session) queueMicrotask(() => broadcastPresence(session.roomId));
     });
   });
 
   return io;
+}
+
+export function evictFromRoomChat(roomId: string, shouldEvict: (access: RoomAccess) => boolean): void {
+  if (!activeChatServer) return;
+  const channel = roomChannel(roomId);
+  const sockets = activeChatServer.sockets.adapter.rooms.get(channel);
+  if (!sockets) return;
+
+  for (const socketId of Array.from(sockets)) {
+    const socket = activeChatServer.sockets.sockets.get(socketId);
+    const session = socket?.data.session;
+    if (session && session.access.roomId === roomId && shouldEvict(session.access)) {
+      socket.leave(channel);
+      delete socket.data.session;
+      socket.disconnect(true);
+    }
+  }
+
+  const identities = new Map<string, RoomPresence>();
+  const remainingSockets = activeChatServer.sockets.adapter.rooms.get(channel);
+  for (const socketId of remainingSockets ?? []) {
+    const s = activeChatServer.sockets.sockets.get(socketId);
+    const session = s?.data.session;
+    if (session && session.access.roomId === roomId) {
+      identities.set(session.access.identityId, roomPresence(session.access, session.fileId));
+    }
+  }
+  activeChatServer.to(channel).emit(
+    'room:presence',
+    Array.from(identities.values()).sort((left, right) => left.name.localeCompare(right.name)),
+  );
+}
+
+export function evictRoomIdentityFromChat(roomId: string, identityId: string): void {
+  evictFromRoomChat(roomId, (access) => access.identityId === identityId);
+}
+
+export function evictRoomShareLinkFromChat(roomId: string, linkId: string): void {
+  evictFromRoomChat(roomId, (access) => Boolean(access.guest && access.shareLinkId === linkId));
+}
+
+export function updateIdentityInChat(identityId: string, newName: string): void {
+  if (!activeChatServer) return;
+  for (const socket of activeChatServer.sockets.sockets.values()) {
+    if (socket.data.session?.access.identityId === identityId) {
+      socket.data.session.access.name = newName;
+      const roomId = socket.data.session.roomId;
+      const channel = roomChannel(roomId);
+      const identities = new Map<string, RoomPresence>();
+      const sockets = activeChatServer.sockets.adapter.rooms.get(channel);
+      for (const socketId of sockets ?? []) {
+        const s = activeChatServer.sockets.sockets.get(socketId);
+        const session = s?.data.session;
+        if (session && session.access.roomId === roomId) {
+          identities.set(session.access.identityId, roomPresence(session.access, session.fileId));
+        }
+      }
+      activeChatServer.to(channel).emit(
+        'room:presence',
+        Array.from(identities.values()).sort((left, right) => left.name.localeCompare(right.name)),
+      );
+    }
+  }
 }
 
 /** Announce a room rename to connected collaborators and preserve it in chat history. */

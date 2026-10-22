@@ -27,12 +27,19 @@ export class ApiError extends Error {
   }
 }
 
+export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+
+export function resolveApiUrl(path: string): string {
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  return `${API_BASE}${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
 type RequestOptions = Omit<RequestInit, 'body'> & { body?: unknown };
 
 async function request(path: string, options: RequestOptions = {}): Promise<Response> {
   const { body, headers, ...rest } = options;
 
-  const response = await fetch(path, {
+  const response = await fetch(resolveApiUrl(path), {
     credentials: 'include',
     headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),

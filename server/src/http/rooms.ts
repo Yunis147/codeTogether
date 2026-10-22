@@ -15,7 +15,7 @@ import {
   createStarterTree,
 } from '../sync/tree.js';
 import { resetRoomIdentityConnections, resetRoomShareLinkConnections } from '../sync/index.js';
-import { announceRoomRename } from '../chat.js';
+import { announceRoomRename, evictRoomIdentityFromChat, evictRoomShareLinkFromChat } from '../chat.js';
 import { firstIssue, rateLimit, withRoomAccess, withUser } from './middleware.js';
 
 export const roomsRouter = Router();
@@ -132,7 +132,7 @@ roomsRouter.get(
   withUser(async (user, _request, response) => {
     const memberships = await prisma.membership.findMany({
       where: { userId: user.userId },
-      orderBy: { room: { updatedAt: 'desc' } },
+      orderBy: [{ room: { updatedAt: 'desc' } }, { id: 'asc' }],
       include: {
         room: {
           select: {
@@ -278,6 +278,9 @@ roomsRouter.post(
       where: { userId_roomId: { userId: access.identityId, roomId: access.roomId } },
     });
 
+    resetRoomIdentityConnections(access.roomId, access.identityId);
+    evictRoomIdentityFromChat(access.roomId, access.identityId);
+
     response.status(204).end();
   }),
 );
@@ -376,6 +379,7 @@ roomsRouter.delete(
     });
 
     resetRoomIdentityConnections(access.roomId, userId);
+    evictRoomIdentityFromChat(access.roomId, userId);
 
     response.status(204).end();
   }),
@@ -449,6 +453,7 @@ roomsRouter.delete(
     }
 
     resetRoomShareLinkConnections(access.roomId, String(request.params.linkId));
+    evictRoomShareLinkFromChat(access.roomId, String(request.params.linkId));
 
     response.status(204).end();
   }),
@@ -463,6 +468,63 @@ roomsRouter.get(
       select: { id: true, name: true, type: true, language: true, parentId: true, order: true, deletedAt: true },
     });
     response.json({ files });
+  }),
+);
+
+roomsRouter.delete(
+  '/:roomId/recycle-bin/:fileId',
+  withRoomAccess(async (access, request, response) => {
+    requireEditor(access);
+    const fileId = String(request.params.fileId);
+
+    const target = await prisma.file.findFirst({
+      where: { id: fileId, roomId: access.roomId, deletedAt: { not: null } },
+      select: { id: true, type: true },
+    });
+
+    if (!target) {
+      response.status(404).json({ error: 'Item not found in recycle bin.' });
+      return;
+    }
+
+    const toDelete = new Set<string>([target.id]);
+
+    if (target.type === NodeType.FOLDER) {
+      const candidates = await prisma.file.findMany({
+        where: { roomId: access.roomId, deletedAt: { not: null } },
+        select: { id: true, parentId: true },
+      });
+
+      let added = true;
+      while (added) {
+        added = false;
+        for (const candidate of candidates) {
+          if (candidate.parentId && toDelete.has(candidate.parentId) && !toDelete.has(candidate.id)) {
+            toDelete.add(candidate.id);
+            added = true;
+          }
+        }
+      }
+    }
+
+    await prisma.file.deleteMany({
+      where: { id: { in: Array.from(toDelete) }, roomId: access.roomId },
+    });
+
+    response.status(204).end();
+  }),
+);
+
+roomsRouter.delete(
+  '/:roomId/recycle-bin',
+  withRoomAccess(async (access, _request, response) => {
+    requireEditor(access);
+
+    await prisma.file.deleteMany({
+      where: { roomId: access.roomId, deletedAt: { not: null } },
+    });
+
+    response.status(204).end();
   }),
 );
 
@@ -484,6 +546,7 @@ roomsRouter.get(
       where: {
         roomId: access.roomId,
         type: NodeType.FILE,
+        deletedAt: null,
         OR: [
           { textContent: { contains: query, mode: 'insensitive' } },
           { name: { contains: query, mode: 'insensitive' } },
@@ -539,7 +602,7 @@ roomsRouter.post(
     }
 
     const knownFiles = await prisma.file.findMany({
-      where: { roomId: access.roomId, id: { in: parsed.data.files.map((file) => file.id) } },
+      where: { roomId: access.roomId, deletedAt: null, id: { in: parsed.data.files.map((file) => file.id) } },
       select: { id: true, type: true, language: true, textContent: true },
     });
     const knownById = new Map(knownFiles.map((file) => [file.id, file]));
@@ -635,7 +698,7 @@ roomsRouter.get(
     const [room, files] = await Promise.all([
       prisma.room.findUnique({ where: { id: access.roomId }, select: { name: true } }),
       prisma.file.findMany({
-        where: { roomId: access.roomId },
+        where: { roomId: access.roomId, deletedAt: null },
         select: { id: true, parentId: true, name: true, type: true, textContent: true },
         orderBy: [{ order: 'asc' }, { name: 'asc' }],
       }),

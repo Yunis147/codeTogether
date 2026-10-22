@@ -220,5 +220,27 @@ export function deleteNode(doc: Y.Doc, nodes: TreeNode[], id: string): string[] 
 export function restoreNode(doc: Y.Doc, node: TreeNode): void {
   const map = treeMap(doc);
   if (map.has(node.id)) return;
-  map.set(node.id, node);
+  const nodes = readTree(doc);
+  const name = uniqueName(nodes, node.parentId, node.name);
+  const cleanNode: TreeNode = {
+    id: node.id,
+    parentId: node.parentId,
+    name,
+    type: node.type,
+    language: node.language ?? (node.type === 'FILE' ? languageFor(name) : null),
+    order:
+      typeof node.order === 'number' && Number.isFinite(node.order)
+        ? Math.floor(Math.abs(node.order)) % 2_147_483_647
+        : Math.floor(Date.now() % 2_147_483_647),
+  };
+  map.set(node.id, cleanNode);
+}
+
+/** Atomically restore multiple nodes in one single Yjs transaction. */
+export function restoreNodes(doc: Y.Doc, items: TreeNode[]): void {
+  doc.transact(() => {
+    for (const item of items) {
+      restoreNode(doc, item);
+    }
+  });
 }

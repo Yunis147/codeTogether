@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { api, getGuestToken, setGuestToken } from '../api';
+import { api, getGuestToken, resolveApiUrl, setGuestToken } from '../api';
 import type { AuthUser, Role } from '../types';
 
 export type GuestSession = {
@@ -140,7 +140,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const uploadAvatar = useCallback(async (file: File) => {
     const data = new FormData();
     data.set('photo', file);
-    const response = await fetch('/api/auth/me/avatar', { method: 'POST', credentials: 'include', body: data });
+    const response = await fetch(resolveApiUrl('/api/auth/me/avatar'), { method: 'POST', credentials: 'include', body: data });
     const payload = (await response.json()) as { user?: AuthUser; error?: string };
     if (!response.ok || !payload.user) throw new Error(payload.error ?? 'Could not upload profile photo.');
     setUser(payload.user);

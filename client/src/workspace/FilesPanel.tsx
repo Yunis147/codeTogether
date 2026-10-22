@@ -29,6 +29,10 @@ export function FilesPanel({ roomName }: { roomName: string }) {
   const [recycleBin, setRecycleBin] = useState<Array<TreeNode & { deletedAt: string }>>([]);
   const [showRecycleBin, setShowRecycleBin] = useState(false);
   const [loadingRecycleBin, setLoadingRecycleBin] = useState(false);
+  const [deletingBinId, setDeletingBinId] = useState<string | null>(null);
+  const [clearingBin, setClearingBin] = useState(false);
+  const [pendingPermanentDelete, setPendingPermanentDelete] = useState<(TreeNode & { deletedAt: string }) | null>(null);
+  const [confirmEmptyBin, setConfirmEmptyBin] = useState(false);
 
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -59,20 +63,129 @@ export function FilesPanel({ roomName }: { roomName: string }) {
     setShowRecycleBin(true);
     setLoadingRecycleBin(true);
     try {
-      // Hocuspocus saves collaborative tree updates on a debounce. Retry for
-      // a short window so a just-deleted item is present on the first open.
-      let files: Array<TreeNode & { deletedAt: string }> = [];
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 750));
-        const result = await api<{ files: Array<TreeNode & { deletedAt: string }> }>(`/api/rooms/${room.roomId}/recycle-bin`);
-        files = result.files;
-        if (files.length > 0) break;
+      let result = await api<{ files: Array<TreeNode & { deletedAt: string }> }>(
+        `/api/rooms/${room.roomId}/recycle-bin`,
+      );
+      if (result.files.length === 0) {
+        // Wait once briefly in case a delete was just initiated
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+        result = await api<{ files: Array<TreeNode & { deletedAt: string }> }>(
+          `/api/rooms/${room.roomId}/recycle-bin`,
+        );
       }
-      setRecycleBin(files);
+      setRecycleBin(result.files);
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not load the recycle bin.', 'error');
     } finally {
       setLoadingRecycleBin(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showRecycleBin) return;
+    const treeIds = new Set(room.tree.map((n) => n.id));
+    setRecycleBin((current) => current.filter((entry) => !treeIds.has(entry.id)));
+  }, [room.tree, showRecycleBin]);
+
+  const prevTreeCountRef = useRef(room.tree.length);
+  useEffect(() => {
+    if (showRecycleBin && room.tree.length < prevTreeCountRef.current) {
+      void api<{ files: Array<TreeNode & { deletedAt: string }> }>(
+        `/api/rooms/${room.roomId}/recycle-bin`,
+      ).then((res) => setRecycleBin(res.files)).catch(() => {});
+    }
+    prevTreeCountRef.current = room.tree.length;
+  }, [room.tree.length, showRecycleBin, room.roomId]);
+
+  const restoreItem = useCallback(
+    (item: TreeNode & { deletedAt: string }) => {
+      const restoring = new Set<string>([item.id]);
+      // Walk up to restore any deleted ancestor folders so original path is preserved
+      let currentParentId = item.parentId;
+      while (currentParentId) {
+        const parentEntry = recycleBin.find((candidate) => candidate.id === currentParentId);
+        if (parentEntry && !restoring.has(parentEntry.id)) {
+          restoring.add(parentEntry.id);
+          currentParentId = parentEntry.parentId;
+        } else {
+          break;
+        }
+      }
+      // Walk down to restore any deleted children
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const candidate of recycleBin) {
+          if (candidate.parentId && restoring.has(candidate.parentId) && !restoring.has(candidate.id)) {
+            restoring.add(candidate.id);
+            changed = true;
+          }
+        }
+      }
+      // Parents must be put back before their children so the
+      // original folder layout is restored intact.
+      const selected = recycleBin.filter((entry) => restoring.has(entry.id));
+      const depthOf = (entry: TreeNode & { deletedAt: string }): number => {
+        let depth = 0;
+        let parentId = entry.parentId;
+        while (parentId) {
+          const parent = selected.find((candidate) => candidate.id === parentId);
+          if (!parent) break;
+          depth += 1;
+          parentId = parent.parentId;
+        }
+        return depth;
+      };
+      const sorted = selected.sort((left, right) => depthOf(left) - depthOf(right));
+      room.restoreDeletedBatch(sorted);
+      setRecycleBin((current) => current.filter((entry) => !restoring.has(entry.id)));
+      toast(
+        `Restored ${item.name}${restoring.size > 1 ? ` and ${restoring.size - 1} item${restoring.size === 2 ? '' : 's'}` : ''}.`,
+      );
+    },
+    [recycleBin, room, toast],
+  );
+
+  const confirmDeletePermanent = async (item: TreeNode & { deletedAt: string }): Promise<void> => {
+    setDeletingBinId(item.id);
+    try {
+      await api(`/api/rooms/${room.roomId}/recycle-bin/${item.id}`, { method: 'DELETE' });
+      setRecycleBin((current) => {
+        const removed = new Set<string>([item.id]);
+        if (item.type === 'FOLDER') {
+          let changed = true;
+          while (changed) {
+            changed = false;
+            for (const cand of current) {
+              if (cand.parentId && removed.has(cand.parentId) && !removed.has(cand.id)) {
+                removed.add(cand.id);
+                changed = true;
+              }
+            }
+          }
+        }
+        return current.filter((cand) => !removed.has(cand.id));
+      });
+      toast(`Permanently deleted ${item.name}.`);
+      setPendingPermanentDelete(null);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not delete item.', 'error');
+    } finally {
+      setDeletingBinId(null);
+    }
+  };
+
+  const confirmEmptyRecycleBin = async (): Promise<void> => {
+    setClearingBin(true);
+    try {
+      await api(`/api/rooms/${room.roomId}/recycle-bin`, { method: 'DELETE' });
+      setRecycleBin([]);
+      toast('Recycle bin cleared.');
+      setConfirmEmptyBin(false);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not clear recycle bin.', 'error');
+    } finally {
+      setClearingBin(false);
     }
   };
 
@@ -506,46 +619,150 @@ export function FilesPanel({ roomName }: { roomName: string }) {
         </Modal>
       )}
       {showRecycleBin && (
-        <Modal title="Recycle bin" subtitle="Restore files and folders deleted from this room." onClose={() => setShowRecycleBin(false)} width={460}>
-          <div className="recycle-bin">
-            {loadingRecycleBin ? <p className="muted">Loading deleted items…</p> : recycleBin.length === 0 ? (
-              <div className="recycle-empty"><Icon name="trash" size={24} /><p>The recycle bin is empty.</p></div>
-            ) : recycleBin.map((item) => (
-              <div className="recycle-item" key={item.id}>
-                <Icon name={item.type === 'FOLDER' ? 'folder' : 'files'} size={16} />
-                <div><b>{item.name}</b><small>Deleted {new Date(item.deletedAt).toLocaleString()}</small></div>
-                <button type="button" className="button-quiet" disabled={room.readOnly} onClick={() => {
-                  const restoring = new Set<string>([item.id]);
-                  let changed = true;
-                  while (changed) {
-                    changed = false;
-                    for (const candidate of recycleBin) {
-                      if (candidate.parentId && restoring.has(candidate.parentId) && !restoring.has(candidate.id)) {
-                        restoring.add(candidate.id);
-                        changed = true;
-                      }
-                    }
-                  }
-                  // Parents must be put back before their children so the
-                  // original folder layout is restored intact.
-                  const selected = recycleBin.filter((entry) => restoring.has(entry.id));
-                  const depthOf = (entry: TreeNode & { deletedAt: string }): number => {
-                    let depth = 0;
-                    let parentId = entry.parentId;
-                    while (parentId) {
-                      const parent = selected.find((candidate) => candidate.id === parentId);
-                      if (!parent) break;
-                      depth += 1;
-                      parentId = parent.parentId;
-                    }
-                    return depth;
-                  };
-                  for (const entry of selected.sort((left, right) => depthOf(left) - depthOf(right))) room.restoreDeleted(entry);
-                  setRecycleBin((current) => current.filter((entry) => !restoring.has(entry.id)));
-                  toast(`Restored ${item.name}${restoring.size > 1 ? ` and ${restoring.size - 1} item${restoring.size === 2 ? '' : 's'}` : ''}.`);
-                }}>Restore</button>
+        <Modal
+          title="Recycle bin"
+          subtitle="Restore or permanently delete files and folders removed from this room."
+          onClose={() => setShowRecycleBin(false)}
+          width={480}
+          footer={
+            recycleBin.length > 0 && !room.readOnly ? (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                <button
+                  type="button"
+                  className="button-danger"
+                  disabled={clearingBin || deletingBinId !== null}
+                  onClick={() => setConfirmEmptyBin(true)}
+                >
+                  <Icon name="trash" size={15} />
+                  {clearingBin ? 'Clearing bin…' : 'Empty recycle bin'}
+                </button>
+                <button type="button" className="button-quiet" onClick={() => setShowRecycleBin(false)}>
+                  Done
+                </button>
               </div>
-            ))}
+            ) : undefined
+          }
+        >
+          <div className="recycle-bin">
+            {loadingRecycleBin ? (
+              <p className="muted">Loading deleted items…</p>
+            ) : recycleBin.length === 0 ? (
+              <div className="recycle-empty">
+                <Icon name="trash" size={24} />
+                <p>The recycle bin is empty.</p>
+              </div>
+            ) : (
+              recycleBin.map((item) => (
+                <div className="recycle-item" key={item.id}>
+                  <div className="recycle-item-icon">
+                    <Icon name={item.type === 'FOLDER' ? 'folder' : 'files'} size={16} />
+                  </div>
+                  <div className="recycle-item-info">
+                    <b>{item.name}</b>
+                    <small>Deleted {new Date(item.deletedAt).toLocaleString()}</small>
+                  </div>
+                  <div className="recycle-item-actions">
+                    <button
+                      type="button"
+                      className="button-quiet button-restore"
+                      disabled={room.readOnly || deletingBinId === item.id || clearingBin}
+                      onClick={() => restoreItem(item)}
+                    >
+                      Restore
+                    </button>
+                    <button
+                      type="button"
+                      className="button-delete-perm"
+                      title="Delete permanently"
+                      disabled={room.readOnly || deletingBinId === item.id || clearingBin}
+                      onClick={() => setPendingPermanentDelete(item)}
+                    >
+                      <Icon name="trash" size={15} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {pendingPermanentDelete && (
+        <Modal
+          title={`Delete ${pendingPermanentDelete.type === 'FOLDER' ? 'folder' : 'file'} permanently?`}
+          onClose={() => setPendingPermanentDelete(null)}
+          width={400}
+        >
+          <div className="delete-confirm">
+            <div className="delete-confirm-icon">
+              <Icon name="trash" size={18} />
+            </div>
+            <div>
+              <p className="delete-confirm-title">
+                Permanently delete <b>{pendingPermanentDelete.name}</b>?
+              </p>
+              <p className="muted">
+                {pendingPermanentDelete.type === 'FOLDER'
+                  ? 'All files and folders inside will be deleted permanently. This cannot be undone.'
+                  : 'This file will be completely erased. This cannot be undone.'}
+              </p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button
+                type="button"
+                className="button-quiet"
+                onClick={() => setPendingPermanentDelete(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                disabled={deletingBinId !== null}
+                onClick={() => void confirmDeletePermanent(pendingPermanentDelete)}
+              >
+                {deletingBinId === pendingPermanentDelete.id ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {confirmEmptyBin && (
+        <Modal
+          title="Empty recycle bin?"
+          onClose={() => setConfirmEmptyBin(false)}
+          width={400}
+        >
+          <div className="delete-confirm">
+            <div className="delete-confirm-icon">
+              <Icon name="trash" size={18} />
+            </div>
+            <div>
+              <p className="delete-confirm-title">
+                Permanently delete all items in the recycle bin?
+              </p>
+              <p className="muted">
+                All {recycleBin.length} item{recycleBin.length === 1 ? '' : 's'} will be erased forever. This action cannot be undone.
+              </p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button
+                type="button"
+                className="button-quiet"
+                onClick={() => setConfirmEmptyBin(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                disabled={clearingBin}
+                onClick={() => void confirmEmptyRecycleBin()}
+              >
+                {clearingBin ? 'Emptying…' : 'Empty recycle bin'}
+              </button>
+            </div>
           </div>
         </Modal>
       )}

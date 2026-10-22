@@ -1,7 +1,7 @@
 import argon2 from 'argon2';
 import { Router, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, unlink } from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
 import { Prisma } from '@prisma/client';
@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { currentUser } from '../access.js';
 import { colorFor } from '../lib/presence.js';
 import { prisma } from '../prisma.js';
+import { updateIdentityInChat } from '../chat.js';
 import {
   SESSION_COOKIE,
   sessionCookieOptions,
@@ -206,10 +207,22 @@ authRouter.post(
       response.status(400).json({ error: 'Choose a PNG, JPEG, WebP, or GIF image under 2 MB.' });
       return;
     }
+
+    const previous = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { avatarUrl: true },
+    });
+
     const user = await prisma.user.update({
       where: { id: payload.userId },
       data: { avatarUrl: `/uploads/${request.file.filename}` },
     });
+
+    if (previous?.avatarUrl?.startsWith('/uploads/')) {
+      const oldPath = path.join(uploadDirectory, path.basename(previous.avatarUrl));
+      unlink(oldPath, () => {});
+    }
+
     response.json({ user: publicUser(user) });
   }),
 );
@@ -230,6 +243,7 @@ authRouter.patch(
 
     // The display name is baked into the session token, so it has to be reissued.
     setSession(response, user);
+    updateIdentityInChat(payload.userId, user.name);
     response.json({ user: publicUser(user) });
   }),
 );

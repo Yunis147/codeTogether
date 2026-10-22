@@ -38,9 +38,12 @@ export function SearchPanel() {
       }
 
       // Merge with live tree/active documents
+      const activeFileIds = new Set(currentRoom.tree.filter((n) => n.type === 'FILE').map((n) => n.id));
       const mergedMap = new Map<string, SearchResult>();
       for (const res of serverResults) {
-        mergedMap.set(res.fileId, res);
+        if (activeFileIds.has(res.fileId)) {
+          mergedMap.set(res.fileId, res);
+        }
       }
 
       const qLower = trimmed.toLowerCase();
@@ -58,10 +61,18 @@ export function SearchPanel() {
         }
       }
 
-      // Check open documents live in memory
+      // Check open documents live in memory (authoritative for live edits)
       for (const fileId of currentRoom.openFileIds) {
+        if (!activeFileIds.has(fileId)) {
+          mergedMap.delete(fileId);
+          continue;
+        }
         const doc = currentRoom.documentFor(fileId);
         if (!doc) continue;
+
+        // Discard stale debounced server results for this open file
+        mergedMap.delete(fileId);
+
         const text = doc.model.getValue();
         const lines = text.split('\n');
         const matches: { line: number; column: number; text: string }[] = [];
@@ -72,12 +83,18 @@ export function SearchPanel() {
             if (matches.length >= 20) break;
           }
         }
+        const node = currentRoom.tree.find((n) => n.id === fileId);
         if (matches.length > 0) {
-          const node = currentRoom.tree.find((n) => n.id === fileId);
           mergedMap.set(fileId, {
             fileId,
             name: node?.name ?? 'Untitled',
             matches,
+          });
+        } else if (node && node.name.toLowerCase().includes(qLower)) {
+          mergedMap.set(fileId, {
+            fileId,
+            name: node.name,
+            matches: [{ line: 1, column: 1, text: `File: ${node.name}` }],
           });
         }
       }

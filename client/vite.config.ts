@@ -19,7 +19,7 @@ export default defineConfig({
       '/api': 'http://localhost:3001',
       '/uploads': 'http://localhost:3001',
       '/sync': {
-        target: 'ws://localhost:1234',
+        target: 'ws://localhost:3001',
         ws: true,
       },
       '/socket.io': {

@@ -50,16 +50,24 @@ export function firstIssue(error: ZodError, fallback = 'Check the submitted valu
  */
 export function rateLimit({ windowMs, max }: { windowMs: number; max: number }) {
   const hits = new Map<string, { count: number; resetAt: number }>();
+  let lastCleanup = Date.now();
 
   return (request: Request, response: Response, next: NextFunction): void => {
     const now = Date.now();
 
-    for (const [key, entry] of hits) {
-      if (entry.resetAt <= now) hits.delete(key);
+    // Periodic sweep rather than full map traversal on every request
+    if (now - lastCleanup > 30_000 || hits.size > 5_000) {
+      lastCleanup = now;
+      for (const [key, entry] of hits) {
+        if (entry.resetAt <= now) hits.delete(key);
+      }
     }
 
     const key = request.ip ?? 'unknown';
-    const entry = hits.get(key) ?? { count: 0, resetAt: now + windowMs };
+    let entry = hits.get(key);
+    if (!entry || entry.resetAt <= now) {
+      entry = { count: 0, resetAt: now + windowMs };
+    }
     entry.count += 1;
     hits.set(key, entry);
 

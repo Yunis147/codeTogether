@@ -45,7 +45,7 @@ export function verifyToken(token: string | null | undefined): TokenPayload | nu
 
 export const sessionCookieOptions = {
   httpOnly: true,
-  sameSite: 'lax',
+  sameSite: isProduction ? ('none' as const) : ('lax' as const),
   secure: isProduction,
   maxAge: 7 * 24 * 60 * 60 * 1000,
-} as const;
+};

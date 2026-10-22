@@ -39,6 +39,16 @@ function syncUrl(): string {
   const configured = import.meta.env.VITE_SYNC_URL;
   if (configured) return configured;
 
+  if (import.meta.env.VITE_API_URL) {
+    try {
+      const parsed = new URL(import.meta.env.VITE_API_URL);
+      const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${parsed.host}/sync`;
+    } catch {
+      /* ignore */
+    }
+  }
+
   // Dev goes through Vite's /sync WebSocket proxy, which keeps sync on the same
   // origin as the API so the session cookie is sent either way.
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -90,6 +100,7 @@ export type RoomValue = {
   remove: (fileId: string) => void;
   setLanguage: (fileId: string, language: string) => void;
   restoreDeleted: (node: TreeNode) => void;
+  restoreDeletedBatch: (nodes: TreeNode[]) => void;
   importFiles: (entries: { path: string; content: string }[]) => Promise<number>;
 
   undo: () => void;
@@ -111,7 +122,14 @@ type RoomProviderProps = {
   children: ReactNode;
 };
 
-export function RoomProvider({ roomId, role, token, identity, guest, children }: RoomProviderProps) {
+export function RoomProvider({
+  roomId,
+  role,
+  token,
+  identity,
+  guest,
+  children,
+}: RoomProviderProps) {
   const [serverReadOnly, setServerReadOnly] = useState(role === 'VIEWER');
   const readOnly = role === 'VIEWER' || serverReadOnly;
 
@@ -138,6 +156,20 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const unsyncedRef = useRef(new Map<string, number>());
   const pendingRevealRef = useRef<{ fileId: string; line: number; column: number } | null>(null);
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+
+  useEffect(() => {
+    const aw = treeProviderRef.current?.awareness;
+    if (!aw) return;
+    aw.setLocalStateField('user', {
+      id: identity.id,
+      name: identity.name,
+      color: identity.color,
+      role,
+      guest,
+    });
+  }, [identity.id, identity.name, identity.color, role, guest]);
 
   const recomputeUnsynced = useCallback(() => {
     let total = 0;
@@ -248,12 +280,13 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
 
       // The server replaces `user` with its authenticated identity before
       // peers see it, so this remains safe even if a client is modified.
+      const curIdentity = identityRef.current;
       awareness.setLocalState({
         ...awareness.getLocalState(),
         user: {
-          id: identity.id,
-          name: identity.name,
-          color: identity.color,
+          id: curIdentity.id,
+          name: curIdentity.name,
+          color: curIdentity.color,
           role,
           guest,
         },
@@ -278,6 +311,7 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
           color: user.color,
           role: user.role,
           guest: Boolean(user.guest),
+          avatarUrl: typeof user.avatarUrl === 'string' ? user.avatarUrl : null,
           fileId: typeof raw.file === 'string' ? raw.file : null,
           isYou: clientId === awareness.clientID,
         };
@@ -318,9 +352,9 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
       unsynced.delete('tree');
       recomputeUnsynced();
     };
-  }, [roomId, token, identity, guest, role, reportUnsynced, recomputeUnsynced, refreshCursorStyles]);
+  }, [roomId, token, identity.id, guest, role, reportUnsynced, recomputeUnsynced, refreshCursorStyles]);
 
-  // Open the first file once the tree arrives, so the editor is never empty.
+  // Open the first file once the tree arrives, so the editor is never empty on initial load.
   useEffect(() => {
     if (activeFileId !== null || tree.length === 0) return;
 
@@ -384,9 +418,10 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
       provider.attach();
 
       const text = doc.getText(CONTENT_TEXT_KEY);
-      const node = tree.find((n) => n.id === fileId);
-      const fileName = node?.name ?? 'file.ts';
-      const fileLang = node?.language ?? 'typescript';
+      const liveTree = treeDocRef.current ? readTree(treeDocRef.current) : tree;
+      const node = liveTree.find((n) => n.id === fileId) ?? tree.find((n) => n.id === fileId);
+      const fileName = node?.name ?? 'file.txt';
+      const fileLang = node?.language ?? (node ? languageFor(node.name) : 'plaintext');
       const uri = monaco.Uri.parse(`file:///${roomId}/${fileId}/${fileName}`);
       const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel('', fileLang, uri);
       if (fileLang) {
@@ -583,8 +618,31 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
         const parentExists = node.parentId === null || nodes.some((entry) => entry.id === node.parentId);
         restoreNode(doc, { ...node, parentId: parentExists ? node.parentId : null });
       });
+      if (node.type === 'FILE') {
+        openFile(node.id);
+      }
     },
-    [withTree],
+    [withTree, openFile],
+  );
+
+  const restoreDeletedBatch = useCallback(
+    (nodesToRestore: TreeNode[]) => {
+      withTree((doc, currentNodes) => {
+        const currentIds = new Set(currentNodes.map((n) => n.id));
+        doc.transact(() => {
+          for (const node of nodesToRestore) {
+            const parentExists = node.parentId === null || currentIds.has(node.parentId);
+            restoreNode(doc, { ...node, parentId: parentExists ? node.parentId : null });
+            currentIds.add(node.id);
+          }
+        });
+      });
+      const firstFile = nodesToRestore.find((n) => n.type === 'FILE');
+      if (firstFile) {
+        openFile(firstFile.id);
+      }
+    },
+    [withTree, openFile],
   );
 
   /**
@@ -756,6 +814,7 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
       remove,
       setLanguage,
       restoreDeleted,
+      restoreDeletedBatch,
       importFiles,
       undo,
       redo,
@@ -790,6 +849,7 @@ export function RoomProvider({ roomId, role, token, identity, guest, children }:
       remove,
       setLanguage,
       restoreDeleted,
+      restoreDeletedBatch,
       importFiles,
       undo,
       redo,

@@ -1,3 +1,5 @@
+import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { Server } from '@hocuspocus/server';
 import { Role } from '@prisma/client';
 import * as Y from 'yjs';
@@ -20,23 +22,25 @@ export const syncServer = new Server<SyncContext>({
   async onAuthenticate({ documentName, token, requestHeaders, connectionConfig }) {
     const target = parseDocumentName(documentName);
     if (!target) {
+      console.error('[Sync Auth Error] Unknown document:', documentName);
       throw new Error('Unknown document.');
     }
 
-    const access = await resolveRoomAccess(
-      target.roomId,
-      token,
-      cookieFromHeaders(requestHeaders, SESSION_COOKIE),
-    );
-
-    // Set here rather than on the connection in `connected`: Hocuspocus builds
-    // the Connection from this value and replays the client's already-queued
-    // messages before it awaits `connected`, so assigning later leaves a window
-    // in which a viewer's first writes land. This is also the value sent to the
-    // client in the `authenticated` frame, which lets its provider know.
-    connectionConfig.readOnly = access.role === Role.VIEWER;
-
-    return access;
+    try {
+      const cookie = cookieFromHeaders(requestHeaders, SESSION_COOKIE);
+      const access = await resolveRoomAccess(target.roomId, token, cookie);
+      connectionConfig.readOnly = access.role === Role.VIEWER;
+      return access;
+    } catch (err) {
+      console.error('[Sync Auth Error]', {
+        documentName,
+        token: Boolean(token),
+        hasHeaders: Boolean(requestHeaders),
+        cookie: cookieFromHeaders(requestHeaders, SESSION_COOKIE),
+        error: err instanceof Error ? err.message : err,
+      });
+      throw err;
+    }
   },
 
   /**
@@ -58,6 +62,7 @@ export const syncServer = new Server<SyncContext>({
         color: context.color,
         role: context.role,
         guest: context.guest,
+        avatarUrl: context.avatarUrl,
       };
     }
   },
@@ -88,6 +93,40 @@ export const syncServer = new Server<SyncContext>({
     }
 
     return document;
+  },
+
+  async onChange({ documentName, document, instance }) {
+    const target = parseDocumentName(documentName);
+    if (target?.kind === 'tree') {
+      // Tree mutations (create/delete/restore/rename/move) are critical structural operations.
+      // Persist immediately without the 500ms debounce delay so that page refresh, navigation,
+      // or opening recycle-bin never encounters stale state.
+      queueMicrotask(async () => {
+        try {
+          const debounceKey = `onStoreDocument-${documentName}`;
+          if (instance.debouncer.isDebounced(debounceKey)) {
+            instance.debouncer.executeNow(debounceKey);
+          } else {
+            await mirrorTree(target.roomId, document);
+          }
+        } catch (error) {
+          console.error(`Immediate persist for "${documentName}" failed:`, error);
+        }
+      });
+    }
+  },
+
+  async onDisconnect({ documentName, instance }) {
+    // When a client leaves (refresh, tab close, logout), immediately flush any pending
+    // changes for this document so writes are never lost in transit.
+    const debounceKey = `onStoreDocument-${documentName}`;
+    if (instance.debouncer.isDebounced(debounceKey)) {
+      try {
+        instance.debouncer.executeNow(debounceKey);
+      } catch (error) {
+        console.error(`Disconnect flush for "${documentName}" failed:`, error);
+      }
+    }
   },
 
   async onStoreDocument({ documentName, document }) {
@@ -135,4 +174,26 @@ function closeRoomConnections(
       if (connection.context && shouldClose(connection.context)) connection.close();
     }
   }
+}
+
+/**
+ * Routes WebSocket upgrades on the primary HTTP server directly into Hocuspocus.
+ */
+export async function handleSyncUpgrade(
+  request: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+): Promise<void> {
+  await syncServer.hocuspocus.hooks('onUpgrade', {
+    request,
+    socket,
+    head,
+    instance: syncServer.hocuspocus,
+  });
+  const crossws = (
+    syncServer as unknown as {
+      crossws: { handleUpgrade: (r: IncomingMessage, s: Duplex, h: Buffer) => void };
+    }
+  ).crossws;
+  crossws.handleUpgrade(request, socket, head);
 }

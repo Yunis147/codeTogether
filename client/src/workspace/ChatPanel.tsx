@@ -57,6 +57,8 @@ export function ChatPanel({
   onRoomRenamed,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<RoomChatMessage[]>([]);
+  // Use a ref instead of state so that presence updates don't cause re-renders.
+  const peopleMapRef = useRef<Map<string, LiveRoomPerson>>(new Map());
   const [content, setContent] = useState('');
   const [state, setState] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +67,13 @@ export function ChatPanel({
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const focusOnConnectRef = useRef(open);
+
+  const onIncomingMessageRef = useRef(onIncomingMessage);
+  onIncomingMessageRef.current = onIncomingMessage;
+  const onPresenceChangeRef = useRef(onPresenceChange);
+  onPresenceChangeRef.current = onPresenceChange;
+  const onRoomRenamedRef = useRef(onRoomRenamed);
+  onRoomRenamedRef.current = onRoomRenamed;
 
   useEffect(() => {
     if (!open) {
@@ -115,17 +124,23 @@ export function ChatPanel({
     });
     socket.on('chat:message', (message: RoomChatMessage) => {
       setMessages((current) => mergeMessages(current, [message]));
-      if (message.authorId !== selfId) onIncomingMessage(message);
+      if (message.authorId !== selfId) onIncomingMessageRef.current(message);
     });
-    socket.on('room:presence', (people: LiveRoomPerson[]) => onPresenceChange(people));
-    socket.on('room:renamed', ({ name }: { name: string }) => onRoomRenamed(name));
+    socket.on('room:presence', (people: LiveRoomPerson[]) => {
+      // Update the ref (no re-render) — avatarUrls are only looked up at render time
+      const map = new Map<string, LiveRoomPerson>();
+      for (const p of people) map.set(p.id, p);
+      peopleMapRef.current = map;
+      onPresenceChangeRef.current(people);
+    });
+    socket.on('room:renamed', ({ name }: { name: string }) => onRoomRenamedRef.current(name));
 
     return () => {
       socket.disconnect();
       socketRef.current = null;
-      onPresenceChange([]);
+      onPresenceChangeRef.current([]);
     };
-  }, [roomId, selfId, onIncomingMessage, onPresenceChange, onRoomRenamed]);
+  }, [roomId, selfId]);
 
   useEffect(() => {
     const list = messageListRef.current;
@@ -180,9 +195,10 @@ export function ChatPanel({
         ) : (
           messages.map((message) => {
             const yours = message.authorId === selfId;
+            const photoUrl = peopleMapRef.current.get(message.authorId)?.avatarUrl ?? null;
             return (
               <article className={`chat-message${yours ? ' is-yours' : ''}`} key={message.id}>
-                <Avatar name={message.authorName} color={message.authorColor} size={26} />
+                <Avatar name={message.authorName} color={message.authorColor} photoUrl={photoUrl} size={26} />
                 <div className="chat-message-body">
                   <header>
                     <strong>{yours ? 'You' : message.authorName}</strong>

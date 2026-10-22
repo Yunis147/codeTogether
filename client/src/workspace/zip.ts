@@ -37,14 +37,47 @@ function findEndOfCentralDirectory(view: DataView): number {
   throw new ZipError('That file does not look like a zip archive.');
 }
 
-/** A zip of one folder should not import as a folder inside the project. */
-function stripCommonPrefix(paths: string[]): string[] {
+const PRESERVED_ROOT_FOLDERS = new Set([
+  'src',
+  'lib',
+  'app',
+  'com',
+  'org',
+  'net',
+  'java',
+  'python',
+  'client',
+  'server',
+  'test',
+  'tests',
+  'public',
+  'packages',
+]);
+
+/**
+ * Strips an archive-level wrapper folder (e.g. `my-repo-main/`), while preserving
+ * standard project packages and source directories like `src/` or `com/`.
+ */
+function stripCommonPrefix(paths: string[], archiveName?: string): string[] {
   if (paths.length === 0) return paths;
 
   const first = paths[0].split('/')[0];
-  const shared = paths.every((path) => path.split('/').length > 1 && path.startsWith(`${first}/`));
+  if (PRESERVED_ROOT_FOLDERS.has(first.toLowerCase())) {
+    return paths;
+  }
 
-  return shared ? paths.map((path) => path.slice(first.length + 1)) : paths;
+  const shared = paths.every((path) => path.split('/').length > 1 && path.startsWith(`${first}/`));
+  if (!shared) return paths;
+
+  const baseArchive = archiveName?.replace(/\.zip$/i, '');
+  const isWrapper =
+    !baseArchive ||
+    first === baseArchive ||
+    first.endsWith('-main') ||
+    first.endsWith('-master') ||
+    paths.some((p) => p.split('/').length > 2);
+
+  return isWrapper ? paths.map((path) => path.slice(first.length + 1)) : paths;
 }
 
 function isSafePath(path: string): boolean {
@@ -122,7 +155,10 @@ export async function readZip(file: File): Promise<ZipTextEntry[]> {
     throw new ZipError(reason);
   }
 
-  const paths = stripCommonPrefix(raw.map((entry) => entry.path));
+  const paths = stripCommonPrefix(
+    raw.map((entry) => entry.path),
+    file.name,
+  );
 
   return raw
     .map((entry, index) => ({ path: paths[index], content: entry.content }))

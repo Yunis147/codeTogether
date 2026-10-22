@@ -45,8 +45,16 @@ export function cookieFromHeader(header: string | null | undefined, name: string
 }
 
 /** Reads one cookie out of the raw headers of a Hocuspocus WebSocket request. */
-export function cookieFromHeaders(headers: Headers, name: string): string | null {
-  return cookieFromHeader(headers.get('cookie'), name);
+export function cookieFromHeaders(
+  headers: Headers | Record<string, string | string[] | undefined> | undefined | null,
+  name: string,
+): string | null {
+  if (!headers) return null;
+  const cookieStr =
+    typeof (headers as Headers).get === 'function'
+      ? (headers as Headers).get('cookie')
+      : (headers as Record<string, string | string[] | undefined>)['cookie'];
+  return cookieFromHeader(Array.isArray(cookieStr) ? cookieStr.join('; ') : cookieStr, name);
 }
 
 /** Bearer token, used by guests who have no cookie or callers passing auth headers. */

@@ -19,6 +19,7 @@ import { ChatPanel, type LiveRoomPerson } from './workspace/ChatPanel';
 import { EditorTabs } from './workspace/EditorTabs';
 import { OutputPanel, type LogEntry, type ProblemEntry } from './workspace/OutputPanel';
 import { CollaboratorList } from './workspace/CollaboratorList';
+import { RenameRoomDialog } from './workspace/RenameRoomDialog';
 import { RoomProvider, useRoom, useActiveNode } from './workspace/RoomProvider';
 import { languageLabel, LANGUAGE_CHOICES } from './workspace/language';
 import { CONTENT_TEXT_KEY } from './workspace/tree';
@@ -347,6 +348,10 @@ function RoomsPage() {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    document.title = 'Rooms · codeTogether';
   }, []);
 
   useEffect(() => {
@@ -709,68 +714,6 @@ function ShareDialog({ roomId, onClose }: { roomId: string; onClose: () => void 
   );
 }
 
-function RenameRoomDialog({
-  roomId,
-  currentName,
-  onClose,
-  onRenamed,
-}: {
-  roomId: string;
-  currentName: string;
-  onClose: () => void;
-  onRenamed: (name: string) => void;
-}) {
-  const toast = useToast();
-  const [name, setName] = useState(currentName);
-  const [saving, setSaving] = useState(false);
-
-  const save = async (): Promise<void> => {
-    const trimmed = name.trim();
-    if (trimmed.length < 2) {
-      toast('Room names need at least 2 characters.', 'error');
-      return;
-    }
-    if (trimmed === currentName) {
-      onClose();
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const result = await api<{ room: { name: string } }>(`/api/rooms/${roomId}`, {
-        method: 'PATCH',
-        body: { name: trimmed },
-      });
-      onRenamed(result.room.name);
-      toast('Room renamed. Everyone has been notified in chat.');
-      onClose();
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Could not rename room.', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal title="Rename room" onClose={onClose} width={420}>
-      <form
-        className="share-dialog"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save();
-        }}
-      >
-        <label className="field-label" htmlFor="room-name">Room name</label>
-        <input id="room-name" value={name} onChange={(event) => setName(event.target.value)} autoFocus maxLength={60} />
-        <div className="modal-actions">
-          <button type="button" className="button-quiet" onClick={onClose}>Cancel</button>
-          <button type="submit" className="button-primary" disabled={saving}>{saving ? 'Renaming…' : 'Rename room'}</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
 // ─── Deleted file banner ───────────────────────────────────────────────────────
 
 function DeletedFileBanner({ fileId }: { fileId: string }) {
@@ -867,6 +810,15 @@ function CollaborativeMonacoEditor({
     );
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY, () => room.redo());
   };
+
+  const attachEditorRef = useRef(room.attachEditor);
+  attachEditorRef.current = room.attachEditor;
+
+  useEffect(() => {
+    return () => {
+      attachEditorRef.current(null);
+    };
+  }, []);
 
   return (
     <Editor
@@ -1105,11 +1057,28 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
   const [chatOpen, setChatOpen] = useLocalSetting('chatOpen', false);
   const [showShare, setShowShare] = useState(false);
   const [showRename, setShowRename] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [roomName, setRoomName] = useState(detail.room.name);
   const { user, guest, endGuestSession } = useSession();
   const room = useRoom();
   const activeNode = useActiveNode();
   const showToast = useToast();
+
+  useEffect(() => {
+    setRoomName(detail.room.name);
+  }, [detail.room.name]);
+
+  useEffect(() => {
+    document.title = `${roomName} · codeTogether`;
+  }, [roomName]);
+
+  const handleRoomRenamed = useCallback(
+    (newName: string) => {
+      setRoomName(newName);
+      detail.room.name = newName;
+    },
+    [detail.room],
+  );
 
   // Execution runner state
   const [outputCollapsed, setOutputCollapsed] = useLocalSetting('outputCollapsed', true);
@@ -1137,19 +1106,21 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
   }, []);
 
   const updateSocketPeople = useCallback((people: LiveRoomPerson[]) => {
-    setSocketPeople(
-      people.map((person, index) => ({
-        ...person,
-        clientId: -(index + 1),
-        isYou: person.id === detail.identity.id,
-      })),
-    );
+    const list = people.map((person, index) => ({
+      ...person,
+      clientId: -(index + 1),
+      isYou: person.id === detail.identity.id,
+    }));
+    setSocketPeople(list);
   }, [detail.identity.id]);
 
   const activePeople = socketPeople.length > 0 ? socketPeople : room.people;
 
-  const leaveRoom = useCallback(async () => {
-    if (!window.confirm('Leave this room?')) return;
+  const leaveRoom = useCallback(() => {
+    setShowLeaveConfirm(true);
+  }, []);
+
+  const confirmLeaveRoom = useCallback(async () => {
     try {
       if (detail.guest) {
         endGuestSession();
@@ -1368,7 +1339,9 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
             {panel === 'rooms' && (
               <RoomsPanel
                 currentRoomId={roomId}
+                currentRoomName={roomName}
                 onSelectRoom={() => setPanel('files')}
+                onRenameCurrentRoom={handleRoomRenamed}
               />
             )}
             {panel === 'settings' && <SettingsPanel />}
@@ -1417,7 +1390,7 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
           onClose={() => setChatOpen(false)}
           onIncomingMessage={noteIncomingChat}
           onPresenceChange={updateSocketPeople}
-          onRoomRenamed={setRoomName}
+          onRoomRenamed={handleRoomRenamed}
         />
       </div>
 
@@ -1429,8 +1402,50 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
           roomId={roomId}
           currentName={roomName}
           onClose={() => setShowRename(false)}
-          onRenamed={setRoomName}
+          onRenamed={handleRoomRenamed}
         />
+      )}
+      {showLeaveConfirm && (
+        <Modal
+          title="Leave room?"
+          onClose={() => setShowLeaveConfirm(false)}
+          width={400}
+        >
+          <div className="delete-confirm">
+            <div className="delete-confirm-icon">
+              <Icon name="logout" size={18} />
+            </div>
+            <div>
+              <p className="delete-confirm-title">
+                Leave <b>{roomName}</b>?
+              </p>
+              <p className="muted">
+                {detail.guest
+                  ? 'Your guest session for this room will end.'
+                  : 'You will be removed as a member. You will need an invite link to rejoin.'}
+              </p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button
+                type="button"
+                className="button-quiet"
+                onClick={() => setShowLeaveConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                onClick={() => {
+                  setShowLeaveConfirm(false);
+                  void confirmLeaveRoom();
+                }}
+              >
+                Leave room
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );
@@ -1476,16 +1491,31 @@ function RoomPage({ roomId }: { roomId: string }) {
       return;
     }
 
+    setDetail(null);
+    setLoading(true);
+    setError('');
+    let cancelled = false;
+
     api<RoomDetail>(`/api/rooms/${roomId}`)
-      .then(setDetail)
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : 'Could not load room.';
-        setError(msg);
+      .then((res) => {
+        if (!cancelled) setDetail(res);
       })
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : 'Could not load room.';
+          setError(msg);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [roomId, user, guest, sessionLoading]);
 
-  if (sessionLoading || loading) {
+  if (sessionLoading || loading || !detail || detail.room.id !== roomId) {
     return (
       <div className="loading">
         <Icon name="refresh" size={22} className="spin" />
@@ -1526,7 +1556,7 @@ function Router() {
 
   useEffect(() => {
     if (loading || !user) return;
-    if (route.name === 'room' || route.name === 'join') return;
+    if (route.name === 'room' || route.name === 'join' || route.name === 'rooms') return;
     if (enteringRef.current) return;
     enteringRef.current = true;
     void enterWorkspace().finally(() => {
@@ -1548,13 +1578,6 @@ function Router() {
     case 'room':
       return <RoomPage roomId={route.roomId} />;
     case 'rooms':
-      if (user) {
-        return (
-          <div className="loading">
-            <Icon name="refresh" size={22} className="spin" />
-          </div>
-        );
-      }
       return <RoomsPage />;
     default:
       if (user) {
