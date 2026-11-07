@@ -6,6 +6,7 @@
     "server"
   ],
   "scripts": {
+    "start": "node server/dist/index.js",
     "dev": "node scripts/dev.mjs",
     "db:push": "node scripts/db-push.mjs",
     "build": "npm run build --workspace=server && npm run build --workspace=client",

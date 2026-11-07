@@ -261,6 +261,7 @@ export function RoomProvider({
       onAuthenticationFailed: ({ reason }) => {
         setConnection('disconnected');
         setAuthError(reason || 'You no longer have access to this room.');
+        websocket.disconnect();
       },
       onUnsyncedChanges: ({ number }) => reportUnsynced('tree', number),
     });
@@ -414,6 +415,11 @@ export function RoomProvider({
         document: doc,
         token: token ?? '',
         onUnsyncedChanges: ({ number }) => reportUnsynced(fileId, number),
+        onAuthenticationFailed: ({ reason }) => {
+          setConnection('disconnected');
+          setAuthError(reason || 'You no longer have access to this room.');
+          websocket.disconnect();
+        },
       });
       provider.attach();
 

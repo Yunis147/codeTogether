@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +40,29 @@ function start(command, args, name) {
   });
 }
 
+function waitForPort(port, host = '127.0.0.1', timeout = 15000) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      const socket = new net.Socket();
+      socket.setTimeout(400);
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      const retry = () => {
+        socket.destroy();
+        if (Date.now() - start > timeout) return resolve(false);
+        setTimeout(check, 100);
+      };
+      socket.on('error', retry);
+      socket.on('timeout', retry);
+      socket.connect(port, host);
+    };
+    check();
+  });
+}
+
 function stop(code = 0) {
   if (stopping) return;
   stopping = true;
@@ -56,6 +80,7 @@ try {
   await run(npm, ['run', 'db:push']);
   console.log('Starting the API and web client...');
   start(npm, ['run', 'dev', '--workspace=server']);
+  await waitForPort(Number(process.env.PORT) || 3001);
   start(npm, ['run', 'dev', '--workspace=client']);
 } catch (error) {
   console.error(error.message);
