@@ -97,6 +97,7 @@ export function ChatPanel({
       path: '/socket.io',
       auth: { token: getGuestToken() ?? undefined },
       transports: ['websocket', 'polling'],
+      withCredentials: true,
     });
     socketRef.current = socket;
 
