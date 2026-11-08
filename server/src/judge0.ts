@@ -27,9 +27,20 @@ type Judge0Response = {
   time?: string | null;
   memory?: number | null;
   error?: string;
+  token?: string;
 };
 
 const MULTI_FILE_LANGUAGE_ID = 89;
+
+const ONLINECOMPILER_LANG_IDS: Record<RunnableLanguage, number> = {
+  python: 113,
+  javascript: 102,
+  typescript: 101,
+  c: 103,
+  cpp: 105,
+  java: 91,
+};
+
 const REQUEST_TIMEOUT_MS = 20_000;
 
 function quoteForShell(value: string): string {
@@ -93,7 +104,12 @@ function scriptsFor(language: RunnableLanguage, entryPath: string, entrySource: 
 function judge0Headers(): HeadersInit {
   return {
     'Content-Type': 'application/json',
-    ...(env.JUDGE0_AUTH_TOKEN ? { 'X-Auth-Token': env.JUDGE0_AUTH_TOKEN } : {}),
+    ...(env.JUDGE0_AUTH_TOKEN
+      ? {
+          'X-Auth-Token': env.JUDGE0_AUTH_TOKEN,
+          'Authorization': env.JUDGE0_AUTH_TOKEN,
+        }
+      : {}),
   };
 }
 
@@ -123,13 +139,19 @@ export async function executeProject({
     ...scriptsFor(language, entryPath, entrySource),
   ]);
 
+  const isOnlineCompiler = env.JUDGE0_URL.includes('onlinecompiler.io');
+  const languageId = isOnlineCompiler
+    ? ONLINECOMPILER_LANG_IDS[language]
+    : MULTI_FILE_LANGUAGE_ID;
+
   let response: Response;
   try {
     response = await fetch(`${env.JUDGE0_URL}/submissions?base64_encoded=false&wait=true`, {
       method: 'POST',
       headers: judge0Headers(),
       body: JSON.stringify({
-        language_id: MULTI_FILE_LANGUAGE_ID,
+        language_id: languageId,
+        source_code: entrySource,
         additional_files: archive.toString('base64'),
         stdin,
       }),
@@ -139,13 +161,36 @@ export async function executeProject({
     throw new Judge0Error('The code runner is unavailable. Start Judge0 with Docker and try again.', 503);
   }
 
-  const body = (await response.json().catch(() => null)) as Judge0Response | null;
+  let body = (await response.json().catch(() => null)) as Judge0Response | null;
   if (!response.ok || !body) {
     const detail = body?.error ? ` (${body.error})` : '';
     throw new Judge0Error(`The code runner rejected this submission${detail}`, 502);
   }
 
   if (body.error) throw new Judge0Error(`The code runner rejected this submission (${body.error})`, 502);
+
+  // If the runner returns a pending token (In Queue or Processing), poll for completion
+  if (body.token && (body.status?.id == null || body.status.id <= 2)) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < 15_000) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      try {
+        const pollRes = await fetch(`${env.JUDGE0_URL}/submissions/${body.token}?base64_encoded=false`, {
+          headers: judge0Headers(),
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (pollRes.ok) {
+          const pollData = (await pollRes.json().catch(() => null)) as Judge0Response | null;
+          if (pollData) {
+            body = pollData;
+            if (pollData.status?.id && pollData.status.id > 2) break;
+          }
+        }
+      } catch {
+        break;
+      }
+    }
+  }
 
   return {
     status: {
