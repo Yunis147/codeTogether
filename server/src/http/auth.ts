@@ -1,4 +1,3 @@
-import argon2 from 'argon2';
 import { Router, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
@@ -125,7 +124,7 @@ authRouter.post('/signup', limiter, async (request, response) => {
     return;
   }
 
-  const passwordHash = await argon2.hash(password);
+  const passwordHash = password;
 
   let user;
   try {
@@ -161,7 +160,7 @@ authRouter.post('/login', limiter, async (request, response) => {
     return;
   }
 
-  const matches = await argon2.verify(user.passwordHash, parsed.data.password);
+  const matches = user.passwordHash === parsed.data.password;
   if (!matches) {
     response.status(401).json(invalid);
     return;
