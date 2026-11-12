@@ -197,7 +197,12 @@ export function setNodeLanguage(doc: Y.Doc, id: string, language: string): void 
 }
 
 export function moveNode(doc: Y.Doc, id: string, parentId: string | null): void {
-  patch(doc, id, { parentId });
+  const nodes = readTree(doc);
+  const node = nodes.find((entry) => entry.id === id);
+  if (!node || node.parentId === parentId) return;
+  if (parentId && !nodes.some((entry) => entry.id === parentId && entry.type === 'FOLDER')) return;
+  if (descendantsOf(nodes, id).includes(parentId ?? '')) return;
+  patch(doc, id, { parentId, name: uniqueName(nodes, parentId, node.name, id) });
 }
 
 /**

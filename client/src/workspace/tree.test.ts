@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { createNode, readTree, restoreNodes, treeMap } from './tree';
+import { createNode, moveNode, pathOf, readTree, restoreNodes, treeMap } from './tree';
 
 describe('workspace tree', () => {
+  it('keeps paths unique when moving identically named files into one folder', () => {
+    const doc = new Y.Doc();
+    createNode(doc, { id: 'one', parentId: null, name: 'one', type: 'FOLDER' });
+    createNode(doc, { id: 'two', parentId: null, name: 'two', type: 'FOLDER' });
+    createNode(doc, { id: 'a', parentId: 'one', name: 'main.py', type: 'FILE' });
+    createNode(doc, { id: 'b', parentId: 'two', name: 'main.py', type: 'FILE' });
+    moveNode(doc, 'b', 'one');
+    const tree = readTree(doc);
+    expect(pathOf(tree, 'a')).not.toBe(pathOf(tree, 'b'));
+    expect(tree.find((node) => node.id === 'b')?.parentId).toBe('one');
+  });
   it('keeps file ordering inside the Prisma Int range', () => {
     const doc = new Y.Doc();
 

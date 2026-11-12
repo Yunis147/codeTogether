@@ -103,7 +103,9 @@ export function ChatPanel({
 
     const join = (): void => {
       setState('connecting');
-      socket.emit('chat:join', { roomId }, (result: ChatAck) => {
+      setSending(false);
+      socket.timeout(10_000).emit('chat:join', { roomId }, (error: Error | null, result?: ChatAck) => {
+        if (error || !result) { setState('error'); setError('Chat connection timed out. Reconnect to retry.'); return; }
         if (result.ok) {
           setState('connected');
           setError(null);
@@ -115,7 +117,12 @@ export function ChatPanel({
     };
 
     socket.on('connect', join);
-    socket.on('disconnect', () => setState('connecting'));
+    socket.on('disconnect', (reason) => {
+      setState('connecting'); setSending(false);
+      onPresenceChangeRef.current([]);
+      // Access changes disconnect the old socket; join again with current access.
+      if (reason === 'io server disconnect') socket.connect();
+    });
     socket.on('connect_error', () => {
       setState('error');
       setError('Chat could not connect. Retrying…');
@@ -154,15 +161,19 @@ export function ChatPanel({
   }, [activeFileId, state]);
 
   const send = (): void => {
-    const text = content.trim();
+    const draft = content;
+    const text = draft.trim();
     const socket = socketRef.current;
     if (!text || !socket || state !== 'connected' || sending) return;
 
     setSending(true);
-    socket.emit('chat:send', { content: text }, (result: ChatAck) => {
+    setError(null);
+    socket.timeout(10_000).emit('chat:send', { content: text }, (error: Error | null, result?: ChatAck) => {
       setSending(false);
+      if (error || !result) { setError('Delivery was not confirmed. Your message is kept here for retry.'); return; }
       if (result.ok) {
-        setContent('');
+        setError(null);
+        setContent((current) => current === draft ? '' : current);
       } else {
         setError(result.error);
       }
@@ -185,6 +196,7 @@ export function ChatPanel({
         <span className={`chat-state-dot is-${state}`} />
         {state === 'connected' ? 'Everyone in this room can see these messages.' : error ?? 'Connecting to chat…'}
       </div>
+      {state === 'connected' && error && <p className="chat-error" role="alert">{error}</p>}
 
       <div className="chat-messages" ref={messageListRef} aria-live="polite">
         {messages.length === 0 ? (

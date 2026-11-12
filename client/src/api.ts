@@ -68,6 +68,9 @@ export async function apiBlob(path: string): Promise<{ blob: Blob; filename: str
   const response = await request(path);
   const disposition = response.headers.get('content-disposition') ?? '';
   const match = /filename="([^"]+)"/.exec(disposition);
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  let filename = match?.[1] ?? 'project.zip';
+  if (encoded) { try { filename = decodeURIComponent(encoded[1]); } catch { /* Use the ASCII fallback. */ } }
 
-  return { blob: await response.blob(), filename: match?.[1] ?? 'project.zip' };
+  return { blob: await response.blob(), filename };
 }

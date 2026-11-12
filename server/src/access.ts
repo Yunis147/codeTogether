@@ -41,7 +41,8 @@ export function cookieFromHeader(header: string | null | undefined, name: string
     .map((part) => part.trim())
     .find((part) => part.startsWith(`${name}=`));
 
-  return match ? decodeURIComponent(match.slice(name.length + 1)) : null;
+  try { return match ? decodeURIComponent(match.slice(name.length + 1)) : null; }
+  catch { return null; }
 }
 
 /** Reads one cookie out of the raw headers of a Hocuspocus WebSocket request. */
@@ -70,10 +71,10 @@ export function currentUser(request: Request): UserPayload | null {
   return payload?.kind === 'user' ? payload : null;
 }
 
-async function accessForUser(userId: string, name: string, roomId: string): Promise<RoomAccess> {
+async function accessForUser(userId: string, _name: string, roomId: string): Promise<RoomAccess> {
   const membership = await prisma.membership.findUnique({
     where: { userId_roomId: { userId, roomId } },
-    include: { user: { select: { avatarUrl: true } } },
+    include: { user: { select: { name: true, avatarUrl: true } } },
   });
 
   if (!membership) throw new AccessError('You are not a member of this room.', 403);
@@ -81,7 +82,7 @@ async function accessForUser(userId: string, name: string, roomId: string): Prom
   return {
     roomId,
     role: membership.role,
-    name,
+    name: membership.user.name,
     color: colorFor(userId),
     avatarUrl: membership.user.avatarUrl,
     guest: false,

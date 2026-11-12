@@ -23,7 +23,22 @@ async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Response(bytes as unknown as BodyInit).body;
   if (!stream) throw new ZipError('Could not read zip entry.');
   const inflated = stream.pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(inflated).arrayBuffer());
+  const reader = inflated.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_IMPORT_FILE_BYTES) throw new ZipError('A decompressed file exceeds the 1 MB import limit.');
+      chunks.push(value);
+    }
+  } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+  const content = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { content.set(chunk, offset); offset += chunk.length; }
+  return content;
 }
 
 function findEndOfCentralDirectory(view: DataView): number {
@@ -86,6 +101,7 @@ function isSafePath(path: string): boolean {
 }
 
 export async function readZip(file: File): Promise<ZipTextEntry[]> {
+  if (file.size > 32 * 1024 * 1024) throw new ZipError('Choose an archive under 32 MB.');
   const buffer = await file.arrayBuffer();
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
@@ -100,8 +116,8 @@ export async function readZip(file: File): Promise<ZipTextEntry[]> {
   let skippedBinary = 0;
 
   for (let index = 0; index < entryCount; index += 1) {
-    if (cursor + 46 > view.byteLength) break;
-    if (view.getUint32(cursor, true) !== CENTRAL_FILE_HEADER) break;
+    if (raw.length >= MAX_IMPORT_FILES) throw new ZipError('Import at most 200 text files at a time.');
+    if (cursor + 46 > view.byteLength || view.getUint32(cursor, true) !== CENTRAL_FILE_HEADER) throw new ZipError('The archive directory is damaged.');
 
     const method = view.getUint16(cursor + 10, true);
     const compressedSize = view.getUint32(cursor + 20, true);
@@ -110,6 +126,7 @@ export async function readZip(file: File): Promise<ZipTextEntry[]> {
     const extraLength = view.getUint16(cursor + 30, true);
     const commentLength = view.getUint16(cursor + 32, true);
     const localOffset = view.getUint32(cursor + 42, true);
+    if (cursor + 46 + nameLength + extraLength + commentLength > view.byteLength) throw new ZipError('The archive directory is damaged.');
 
     const path = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
     cursor += 46 + nameLength + extraLength + commentLength;
@@ -123,9 +140,12 @@ export async function readZip(file: File): Promise<ZipTextEntry[]> {
       continue;
     }
 
+    if (localOffset + 30 > view.byteLength || view.getUint32(localOffset, true) !== 0x04034b50) throw new ZipError('The archive contains an invalid file header.');
+    if (view.getUint16(localOffset + 6, true) & 1) throw new ZipError('Encrypted ZIP files are not supported.');
     const localNameLength = view.getUint16(localOffset + 26, true);
     const localExtraLength = view.getUint16(localOffset + 28, true);
     const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    if (dataStart + compressedSize > view.byteLength) throw new ZipError('The archive contains incomplete file data.');
     const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
 
     let content: Uint8Array;
@@ -136,6 +156,7 @@ export async function readZip(file: File): Promise<ZipTextEntry[]> {
     } else {
       continue;
     }
+    if (content.length > MAX_IMPORT_FILE_BYTES || content.length !== uncompressedSize) throw new ZipError('The archive declares an incorrect file size.');
 
     // A NUL byte means this is not source code; importing it as text would
     // corrupt it, so it is left out rather than mangled.

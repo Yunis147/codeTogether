@@ -126,6 +126,53 @@ file must contain one `main` function. Standard input is available in the
 **Input** tab of the bottom panel. Owners and editors can run code; viewers
 cannot.
 
+Cloud deployments keep the OnlineCompiler.io language mapping and token polling.
+If the initial response is still queued or processing, the frontend continues
+polling through the room API until the result arrives. **Stop** stops waiting in
+the browser; it does not cancel a submission already running in the sandbox.
+
+## Production configuration
+
+The existing deployment uses Neon for PostgreSQL, Render for the backend, and
+Vercel for the frontend. Keep the root `start` command and the Vercel routing
+files when deploying these fixes. The Prisma schema is unchanged; these fixes
+do not require a database migration.
+
+Configure these values in the deployment dashboards:
+
+| Service | Variable | Value |
+|---|---|---|
+| Render | `NODE_ENV` | `production` |
+| Render | `DATABASE_URL` | Existing Neon connection string |
+| Render | `JWT_SECRET` | Existing private signing key |
+| Render | `CLIENT_ORIGIN` | Exact Vercel frontend origin, such as `https://your-app.vercel.app` |
+| Render | `JUDGE0_URL` | Existing OnlineCompiler.io API base URL |
+| Render | `JUDGE0_AUTH_TOKEN` | Existing OnlineCompiler.io API key |
+| Vercel | `VITE_API_URL` | Render backend origin, without `/api` |
+| Vercel | `VITE_SYNC_URL` | Optional; defaults to the backend's `wss://…/sync` endpoint |
+
+**Set `CLIENT_ORIGIN` before deploying the backend changes.** Production startup
+requires it. Multiple trusted origins can be comma-separated; omit trailing
+slashes and wildcard hosts. HTTP, sync WebSocket, and chat connections use the
+same allowlist. Add preview origins explicitly if testing a Vercel preview.
+
+Profile images are stored in the backend's `uploads` directory. Use a persistent
+Render disk mounted at that directory to keep photos across redeploys; an
+ephemeral filesystem will lose them. The UI falls back to initials if a photo
+is unavailable.
+
+## Saving and reconnecting
+
+Offline edits stay in their Yjs documents, including closed dirty tabs and
+imports that are awaiting acknowledgement. Keep the workspace open until it
+reconnects. Import connection/delivery timeouts now report a failure or pending
+delivery instead of announcing success and discarding file content.
+
+The status bar tracks acknowledgement by the sync server. PostgreSQL storage
+is separate: failed store hooks reject so Hocuspocus retains the document, with
+retries backing off from 2 to 30 seconds. Browser memory is not durable offline
+storage, and acknowledgement is not confirmation of a completed database transaction.
+
 ## Room chat and preferences
 
 Select **Chat** in the top bar, or press `Alt+Shift+C`, to open the room
@@ -148,4 +195,5 @@ width, chat state, and output state are remembered in the browser.
 | `npm run build` | Compiles both client and server for production |
 | `npm run typecheck` | Runs TypeScript type checking across all packages |
 | `npm run lint` | Runs ESLint across client and server |
+| `npm test` | Runs source regression tests for both workspaces |
 | `npm run db:push` | Pushes Prisma schema updates to PostgreSQL |

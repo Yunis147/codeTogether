@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:push": "prisma db push",
-    "test": "vitest run"
+    "test": "vitest run src"
   },
   "dependencies": {
     "@hocuspocus/server": "^4.7.0",

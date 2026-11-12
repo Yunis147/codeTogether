@@ -87,6 +87,7 @@ export function SettingsPanel() {
             <button
               type="button"
               className={theme === 'dark' ? 'is-on' : ''}
+              aria-pressed={theme === 'dark'}
               onClick={() => setTheme('dark')}
             >
               <Icon name="moon" size={14} /> Dark
@@ -94,6 +95,7 @@ export function SettingsPanel() {
             <button
               type="button"
               className={theme === 'light' ? 'is-on' : ''}
+              aria-pressed={theme === 'light'}
               onClick={() => setTheme('light')}
             >
               <Icon name="sun" size={14} /> Light
@@ -162,6 +164,9 @@ export function SettingsPanel() {
                 <div className="button-row">
                   <input
                     id="display-name"
+                    name="displayName"
+                    autoComplete="name"
+                    maxLength={40}
                     value={name}
                     onChange={(event) => setName(event.target.value)}
                     onKeyDown={(event) => {

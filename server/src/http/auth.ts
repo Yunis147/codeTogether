@@ -1,12 +1,13 @@
 import argon2 from 'argon2';
 import { Router, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, unlink } from 'node:fs';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import multer from 'multer';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { currentUser } from '../access.js';
+import { AccessError, currentUser, resolveRoomAccess } from '../access.js';
+import { imageExtension } from '../lib/images.js';
 import { colorFor } from '../lib/presence.js';
 import { prisma } from '../prisma.js';
 import { updateIdentityInChat } from '../chat.js';
@@ -63,12 +64,8 @@ function publicUser(user: { id: string; name: string; email: string; avatarUrl: 
 }
 
 const uploadDirectory = path.resolve('uploads');
-mkdirSync(uploadDirectory, { recursive: true });
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: uploadDirectory,
-    filename: (_request, file, callback) => callback(null, `${randomUUID()}${path.extname(file.originalname).toLowerCase()}`),
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (_request, file, callback) => callback(null, /^image\/(png|jpe?g|webp|gif)$/.test(file.mimetype)),
 });
@@ -94,15 +91,16 @@ async function linkGuestSession(userId: string, guestToken?: string): Promise<st
   const payload = verifyToken(guestToken);
   if (payload?.kind !== 'guest') return null;
 
-  const room = await prisma.room.findUnique({
-    where: { id: payload.roomId },
-    select: { id: true },
-  });
-  if (!room) return null;
+  let access;
+  try { access = await resolveRoomAccess(payload.roomId, guestToken ?? null, null); }
+  catch (error) {
+    if (error instanceof AccessError) return null;
+    throw error;
+  }
 
   await prisma.membership.upsert({
     where: { userId_roomId: { userId, roomId: payload.roomId } },
-    create: { userId, roomId: payload.roomId, role: payload.role },
+    create: { userId, roomId: payload.roomId, role: access.role },
     // Someone who is already a member keeps the role they have: a viewer link
     // must never demote an editor.
     update: {},
@@ -201,26 +199,43 @@ const profileSchema = z.object({ name: nameField });
 
 authRouter.post(
   '/me/avatar',
-  upload.single('photo'),
   withUser(async (payload, request, response) => {
+    await new Promise<void>((resolve, reject) => {
+      upload.single('photo')(request, response, (error) => error ? reject(error) : resolve());
+    });
     if (!request.file) {
       response.status(400).json({ error: 'Choose a PNG, JPEG, WebP, or GIF image under 2 MB.' });
       return;
     }
 
+    const extension = imageExtension(request.file.buffer);
+    if (!extension) {
+      response.status(400).json({ error: 'Choose a valid PNG, JPEG, WebP, or GIF image.' });
+      return;
+    }
+    const filename = `${randomUUID()}${extension}`;
+    const filePath = path.join(uploadDirectory, filename);
     const previous = await prisma.user.findUnique({
       where: { id: payload.userId },
       select: { avatarUrl: true },
     });
 
-    const user = await prisma.user.update({
-      where: { id: payload.userId },
-      data: { avatarUrl: `/uploads/${request.file.filename}` },
-    });
+    await mkdir(uploadDirectory, { recursive: true });
+    await writeFile(filePath, request.file.buffer, { flag: 'wx' });
+    let user;
+    try {
+      user = await prisma.user.update({
+        where: { id: payload.userId },
+        data: { avatarUrl: `/uploads/${filename}` },
+      });
+    } catch (error) {
+      await unlink(filePath).catch(() => {});
+      throw error;
+    }
 
     if (previous?.avatarUrl?.startsWith('/uploads/')) {
       const oldPath = path.join(uploadDirectory, path.basename(previous.avatarUrl));
-      unlink(oldPath, () => {});
+      await unlink(oldPath).catch(() => {});
     }
 
     response.json({ user: publicUser(user) });

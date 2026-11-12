@@ -2,9 +2,9 @@ import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import { z } from 'zod';
 import { AccessError, cookieFromHeader, resolveRoomAccess, type RoomAccess } from './access.js';
-import { env } from './env.js';
 import { prisma } from './prisma.js';
 import { SESSION_COOKIE } from './tokens.js';
+import { isAllowedOrigin } from './lib/origins.js';
 
 const HISTORY_LIMIT = 100;
 const MESSAGE_WINDOW_MS = 10_000;
@@ -116,9 +116,10 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
     path: '/socket.io',
     serveClient: false,
     cors: {
-      origin: env.CLIENT_ORIGIN ? [env.CLIENT_ORIGIN, 'http://localhost:5173'] : true,
+      origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
       credentials: true,
     },
+    allowRequest: (request, callback) => callback(null, isAllowedOrigin(request.headers.origin)),
   });
   activeChatServer = io;
 
@@ -143,6 +144,7 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
     socket.data.sentAt = [];
 
     socket.on('chat:join', async (payload, acknowledge) => {
+      if (typeof acknowledge !== 'function') return;
       const parsed = joinSchema.safeParse(payload);
       if (!parsed.success) {
         acknowledge({ ok: false, error: 'This room cannot be opened for chat.' });
@@ -176,6 +178,7 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
     });
 
     socket.on('chat:send', async (payload, acknowledge) => {
+      if (typeof acknowledge !== 'function') return;
       const parsed = sendSchema.safeParse(payload);
       if (!parsed.success) {
         acknowledge({ ok: false, error: parsed.error.issues[0]?.message ?? 'Check the message.' });
@@ -195,10 +198,10 @@ export function createChatServer(httpServer: HttpServer): Server<ClientToServerE
         return;
       }
 
+      socket.data.sentAt.push(now);
       try {
         const access = await currentAccess(socket, session.roomId);
         socket.data.session = { ...session, access };
-        socket.data.sentAt.push(now);
 
         const message = await prisma.chatMessage.create({
           data: {

@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { Server } from '@hocuspocus/server';
+import { Server, type onStoreDocumentPayload } from '@hocuspocus/server';
 import { Role } from '@prisma/client';
 import * as Y from 'yjs';
 import { cookieFromHeaders, resolveRoomAccess, type RoomAccess } from '../access.js';
@@ -9,8 +9,34 @@ import { prisma } from '../prisma.js';
 import { SESSION_COOKIE } from '../tokens.js';
 import { parseDocumentName } from './names.js';
 import { CONTENT_TEXT_KEY, mirrorTree, storeFileContent } from './tree.js';
+import { isAllowedOrigin } from '../lib/origins.js';
 
 export type SyncContext = RoomAccess;
+const storeRetries = new Map<string, { attempts: number; timer: ReturnType<typeof setTimeout> | null }>();
+
+function clearStoreRetry(name: string): void {
+  const retry = storeRetries.get(name);
+  if (retry?.timer) clearTimeout(retry.timer);
+  storeRetries.delete(name);
+}
+
+function scheduleStoreRetry(payload: onStoreDocumentPayload<SyncContext>): void {
+  const retry = storeRetries.get(payload.documentName) ?? { attempts: 0, timer: null };
+  if (retry.timer) return;
+  retry.attempts = Math.min(retry.attempts + 1, 5);
+  retry.timer = setTimeout(() => {
+    retry.timer = null;
+    const instance = syncServer.hocuspocus;
+    if (instance.documents.get(payload.documentName) !== payload.document) {
+      clearStoreRetry(payload.documentName);
+      return;
+    }
+    // Use Hocuspocus's save mutex and unload handling for every retry.
+    void instance.storeDocumentHooks(payload.document, payload, true);
+  }, Math.min(2_000 * 2 ** (retry.attempts - 1), 30_000));
+  retry.timer.unref();
+  storeRetries.set(payload.documentName, retry);
+}
 
 export const syncServer = new Server<SyncContext>({
   name: 'codeTogether sync',
@@ -18,6 +44,10 @@ export const syncServer = new Server<SyncContext>({
   debounce: 500,
   maxDebounce: 2_000,
   quiet: true,
+
+  async onUpgrade({ request }) {
+    if (!isAllowedOrigin(request.headers.origin)) throw new Error('Website origin denied.');
+  },
 
   async onAuthenticate({ documentName, token, requestHeaders, connectionConfig }) {
     const target = parseDocumentName(documentName);
@@ -36,7 +66,7 @@ export const syncServer = new Server<SyncContext>({
         documentName,
         token: Boolean(token),
         hasHeaders: Boolean(requestHeaders),
-        cookie: cookieFromHeaders(requestHeaders, SESSION_COOKIE),
+        hasCookie: Boolean(cookieFromHeaders(requestHeaders, SESSION_COOKIE)),
         error: err instanceof Error ? err.message : err,
       });
       throw err;
@@ -129,7 +159,8 @@ export const syncServer = new Server<SyncContext>({
     }
   },
 
-  async onStoreDocument({ documentName, document }) {
+  async onStoreDocument(payload) {
+    const { documentName, document } = payload;
     const target = parseDocumentName(documentName);
     if (!target) return;
 
@@ -137,12 +168,22 @@ export const syncServer = new Server<SyncContext>({
       if (target.kind === 'tree') {
         await mirrorTree(target.roomId, document);
       } else {
+        // New files originate in the live tree; never invent a content-only row.
+        const tree = syncServer.hocuspocus.documents.get(`room:${target.roomId}:tree`);
+        if (tree) await mirrorTree(target.roomId, tree);
         await storeFileContent(target.roomId, target.fileId, document);
       }
+      clearStoreRetry(documentName);
     } catch (error) {
-      // A room deleted while someone still had it open is the expected cause.
-      // Losing the write is correct there; crashing the server is not.
       console.error(`Could not persist "${documentName}".`, error);
+      let deleted = false;
+      try {
+        deleted = !(await prisma.room.findUnique({ where: { id: target.roomId }, select: { id: true } }));
+      } catch { /* A failed existence check is not evidence that the room was deleted. */ }
+      if (deleted) { clearStoreRetry(documentName); return; }
+      scheduleStoreRetry(payload);
+      // Hocuspocus retains failed documents while the bounded retry recovers storage.
+      throw error;
     }
   },
 });
@@ -160,6 +201,10 @@ export function resetRoomIdentityConnections(roomId: string, identityId: string)
 /** Drop live guest sockets that were authorised by a now-revoked share link. */
 export function resetRoomShareLinkConnections(roomId: string, linkId: string): void {
   closeRoomConnections(roomId, (context) => context.guest && context.shareLinkId === linkId);
+}
+
+export function closeDeletedRoomConnections(roomId: string): void {
+  closeRoomConnections(roomId, () => true);
 }
 
 function closeRoomConnections(

@@ -132,86 +132,64 @@ export function createStarterContent(): Y.Doc {
  * truth; these rows exist so search and zip export can read a whole project
  * from SQL without loading every file's document into memory.
  */
-export async function mirrorTree(roomId: string, doc: Y.Doc): Promise<void> {
-  const nodes = readTree(doc);
-  const keep = nodes.map((node) => node.id);
-  const treeState = Buffer.from(Y.encodeStateAsUpdate(doc));
+const roomWrites = new Map<string, Promise<void>>();
 
-  // IDs originate in a client-owned Yjs tree. They are normally UUIDs, but
-  // never trust a client to preserve global uniqueness: without this check an
-  // update in one room could overwrite metadata for a mirrored file elsewhere.
-  if (keep.length > 0) {
-    const existing = await prisma.file.findMany({
-      where: { id: { in: keep } },
-      select: { id: true, roomId: true },
-    });
-    const collision = existing.find((file) => file.roomId !== roomId);
-    if (collision) {
-      throw new Error(`File id ${collision.id} already belongs to another room.`);
-    }
-  }
-
-  await prisma.$transaction([
-    prisma.room.update({ where: { id: roomId }, data: { treeState } }),
-    prisma.file.updateMany({
-      where: { roomId, deletedAt: null, ...(keep.length > 0 ? { id: { notIn: keep } } : {}) },
-      data: { deletedAt: new Date() },
-    }),
-    ...nodes.map((node) =>
-      prisma.file.upsert({
-        where: { id: node.id },
-        create: {
-          id: node.id,
-          roomId,
-          parentId: node.parentId,
-          name: node.name,
-          type: node.type as NodeType,
-          language: node.language,
-          order: Math.floor(Math.abs(node.order || 0)) % 2_147_483_647,
-          deletedAt: null,
-        },
-        // Content columns are deliberately untouched: they are written by the
-        // file's own document, which stores on its own schedule.
-        update: {
-          parentId: node.parentId,
-          name: node.name,
-          type: node.type as NodeType,
-          language: node.language,
-          order: Math.floor(Math.abs(node.order || 0)) % 2_147_483_647,
-          deletedAt: null,
-        },
-      }),
-    ),
-  ]);
+/** All tree, content and recycle-bin writes share a room-local ordering. */
+export function withRoomPersistence<T>(roomId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = roomWrites.get(roomId) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const tail = result.then(() => {}, () => {});
+  roomWrites.set(roomId, tail);
+  void tail.then(() => { if (roomWrites.get(roomId) === tail) roomWrites.delete(roomId); });
+  return result;
 }
 
-/**
- * Writes one file's Yjs snapshot plus a plain-text copy for search.
- *
- * The row may not exist yet: a file is created in the tree document, which
- * stores on a debounce, so content can arrive first. The placeholder name is
- * corrected by the next tree mirror, and a row for a node that was never in the
- * tree is pruned by that same mirror.
- */
-export async function storeFileContent(roomId: string, fileId: string, doc: Y.Doc): Promise<void> {
-  const textContent = doc.getText(CONTENT_TEXT_KEY).toString();
-  const ydocState = Buffer.from(Y.encodeStateAsUpdate(doc));
-
-  const existing = await prisma.file.findUnique({
-    where: { id: fileId },
-    select: { roomId: true },
+export async function mirrorTree(roomId: string, doc: Y.Doc): Promise<void> {
+  await withRoomPersistence(roomId, async () => {
+    // Capture only when this write reaches the front of the queue.
+    const nodes = readTree(doc);
+    const keep = nodes.map((node) => node.id);
+    const treeState = Buffer.from(Y.encodeStateAsUpdate(doc));
+    await prisma.$transaction(async (tx) => {
+      const existing = keep.length ? await tx.file.findMany({
+        where: { id: { in: keep } }, select: { id: true, roomId: true },
+      }) : [];
+      if (existing.some((file) => file.roomId !== roomId)) throw new Error('A file ID belongs to another room.');
+      if (nodes.length) await tx.file.createMany({
+        data: nodes.map((node) => ({ ...node, roomId, type: node.type as NodeType, deletedAt: null })),
+        skipDuplicates: true,
+      });
+      for (const node of nodes) {
+        // A concurrent create in another room can win after the precheck.
+        // The scoped update and count keep that race from crossing room boundaries.
+        const { count } = await tx.file.updateMany({
+          where: { id: node.id, roomId },
+          data: { parentId: node.parentId, name: node.name, type: node.type as NodeType,
+            language: node.language, order: node.order, deletedAt: null },
+        });
+        if (count !== 1) throw new Error('A file ID belongs to another room.');
+      }
+      await tx.file.updateMany({
+        where: { roomId, deletedAt: null, ...(keep.length ? { id: { notIn: keep } } : {}) },
+        data: { deletedAt: new Date() },
+      });
+      await tx.room.update({ where: { id: roomId }, data: { treeState } });
+    });
   });
+}
 
-  if (existing && existing.roomId !== roomId) {
-    throw new Error(`File id ${fileId} already belongs to another room.`);
-  }
-
-  // A file update can arrive before the tree's debounced mirror. The
-  // placeholder is filled in with the real name, parent and language by the
-  // next tree store.
-  await prisma.file.upsert({
-    where: { id: fileId },
-    create: { id: fileId, roomId, name: fileId, type: NodeType.FILE, ydocState, textContent },
-    update: { ydocState, textContent },
+/** Content writes never create rows: the tree mirror creates legitimate files first. */
+export async function storeFileContent(roomId: string, fileId: string, doc: Y.Doc): Promise<void> {
+  await withRoomPersistence(roomId, async () => {
+    const textContent = doc.getText(CONTENT_TEXT_KEY).toString();
+    const ydocState = Buffer.from(Y.encodeStateAsUpdate(doc));
+    const { count } = await prisma.file.updateMany({
+      where: { id: fileId, roomId, type: NodeType.FILE }, data: { ydocState, textContent },
+    });
+    if (!count) {
+      const existing = await prisma.file.findUnique({ where: { id: fileId }, select: { roomId: true } });
+      if (existing && existing.roomId !== roomId) throw new Error('A file ID belongs to another room.');
+      // A permanently deleted file's late content save is intentionally discarded.
+    }
   });
 }

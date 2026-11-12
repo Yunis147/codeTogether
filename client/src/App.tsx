@@ -119,14 +119,16 @@ function LandingPage() {
           <button
             type="button"
             className={tab === 'signin' ? 'is-active' : ''}
-            onClick={() => setTab('signin')}
+            onClick={() => { setTab('signin'); setError(''); }}
+            aria-pressed={tab === 'signin'}
           >
             Sign in
           </button>
           <button
             type="button"
             className={tab === 'signup' ? 'is-active' : ''}
-            onClick={() => setTab('signup')}
+            onClick={() => { setTab('signup'); setError(''); }}
+            aria-pressed={tab === 'signup'}
           >
             Create account
           </button>
@@ -147,6 +149,8 @@ function LandingPage() {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Your name"
                 autoComplete="name"
+                minLength={2}
+                maxLength={40}
                 required
               />
             </label>
@@ -170,11 +174,13 @@ function LandingPage() {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               autoComplete={tab === 'signup' ? 'new-password' : 'current-password'}
+              minLength={tab === 'signup' ? 8 : undefined}
+              maxLength={128}
               required
             />
           </label>
 
-          {error && <p className="auth-error">{error}</p>}
+          {error && <p className="auth-error" role="alert">{error}</p>}
 
           <button type="submit" className="button-primary button-full" disabled={busy}>
             {busy ? 'Please wait…' : tab === 'signin' ? 'Sign in' : 'Create account'}
@@ -799,16 +805,18 @@ function CollaborativeMonacoEditor({
   fontSize: number;
 }) {
   const room = useRoom();
+  const actionsRef = useRef(room);
+  actionsRef.current = room;
   const activeNode = useActiveNode();
 
   const mount: OnMount = (editor) => {
     room.attachEditor(editor);
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyZ, () => room.undo());
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyZ, () => actionsRef.current.undo());
     editor.addCommand(
       monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyZ,
-      () => room.redo(),
+      () => actionsRef.current.redo(),
     );
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY, () => room.redo());
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY, () => actionsRef.current.redo());
   };
 
   const attachEditorRef = useRef(room.attachEditor);
@@ -898,6 +906,7 @@ function EditorStatusBar() {
             <label className="statusbar-lang-label" title="Change file language">
               <select
                 className="statusbar-lang-select"
+                aria-label="File language"
                 value={activeNode.language ?? 'plaintext'}
                 disabled={room.readOnly}
                 onChange={(e) => room.setLanguage(activeNode.id, e.target.value)}
@@ -1002,11 +1011,10 @@ function Topbar({
             type="button"
             className="topbar-run-btn"
             onClick={onRun}
-            title={running ? 'Program is running' : 'Run current file (Ctrl+Enter)'}
-            disabled={running}
+            title={running ? 'Stop waiting for this run' : 'Run current file (Ctrl+Enter)'}
           >
-            <Icon name={running ? 'refresh' : 'play'} size={14} className={running ? 'spin' : undefined} />
-            <span>{running ? 'Running' : 'Run'}</span>
+            <Icon name={running ? 'close' : 'play'} size={14} />
+            <span>{running ? 'Stop' : 'Run'}</span>
             <kbd>⌘↵</kbd>
           </button>
         )}
@@ -1053,7 +1061,7 @@ function Topbar({
 function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail }) {
   const [panel, setPanel] = useLocalSetting<PanelId>('panel', 'files');
   const [sidebarWidth, setSidebarWidth] = useLocalSetting('sidebarWidth', 240);
-  const [sidebarOpen, setSidebarOpen] = useLocalSetting('sidebarOpen', true);
+  const [sidebarOpen, setSidebarOpen] = useLocalSetting('sidebarOpen', !window.matchMedia('(max-width: 640px)').matches);
   const [chatOpen, setChatOpen] = useLocalSetting('chatOpen', false);
   const [showShare, setShowShare] = useState(false);
   const [showRename, setShowRename] = useState(false);
@@ -1063,6 +1071,12 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
   const room = useRoom();
   const activeNode = useActiveNode();
   const showToast = useToast();
+
+  const runAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => runAbortRef.current?.abort(), [roomId]);
+  useEffect(() => {
+    if (room.activeFileId && window.matchMedia('(max-width: 640px)').matches) setSidebarOpen(false);
+  }, [room.activeFileId, setSidebarOpen]);
 
   useEffect(() => {
     setRoomName(detail.room.name);
@@ -1137,7 +1151,7 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
   }, [detail.guest, endGuestSession, roomId, showToast]);
 
   const handleRun = useCallback(async () => {
-    if (isRunning) return;
+    if (isRunning) { runAbortRef.current?.abort(); return; }
     if (room.readOnly || !activeNode || activeNode.type !== 'FILE') {
       showToast('Open a Python, JavaScript, TypeScript, C, C++, or Java source file to run it.', 'error');
       return;
@@ -1182,10 +1196,13 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
     setOutputLogs([{ type: 'system', text: `Running ${entryPath} in the isolated code runner…` }]);
     setOutputProblems([]);
     setOutputDuration('Starting…');
+    const controller = new AbortController();
+    runAbortRef.current = controller;
 
     try {
-      const { result } = await api<{
+      let { result } = await api<{
         result: {
+          token: string | null;
           status: { id: number; description: string };
           stdout: string | null;
           stderr: string | null;
@@ -1196,8 +1213,22 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
         };
       }>(`/api/rooms/${roomId}/run`, {
         method: 'POST',
+        signal: controller.signal,
         body: { entryFileId: activeNode.id, stdin: outputStdin, files },
       });
+
+      while (result.token && result.status.id <= 2) {
+        setOutputDuration(result.status.description);
+        setOutputLogs([{ type: 'system', text: `${result.status.description}. Waiting for the runner…` }]);
+        await new Promise<void>((resolve, reject) => {
+          const cancel = () => { clearTimeout(timer); reject(new DOMException('Stopped', 'AbortError')); };
+          const timer = setTimeout(() => { controller.signal.removeEventListener('abort', cancel); resolve(); }, 800);
+          controller.signal.addEventListener('abort', cancel, { once: true });
+          if (controller.signal.aborted) cancel();
+        });
+        const response = await api<{ result: typeof result }>(`/api/rooms/${roomId}/run/${encodeURIComponent(result.token)}`, { signal: controller.signal });
+        result = response.result;
+      }
 
       const failureOutput = [result.compileOutput, result.stderr, result.message]
         .filter((value): value is string => Boolean(value))
@@ -1227,11 +1258,16 @@ function WorkspaceInner({ roomId, detail }: { roomId: string; detail: RoomDetail
       const memory = result.memory === null ? '' : ` · ${(result.memory / 1024).toFixed(1)} MB`;
       setOutputDuration(result.time ? `${result.time}s${memory}` : result.status.description);
     } catch (error) {
+      if (controller.signal.aborted) {
+        setOutputLogs([{ type: 'system', text: 'Stopped waiting for this run.' }]);
+        setOutputDuration('Stopped'); return;
+      }
       const message = error instanceof Error ? error.message : 'Code execution failed.';
       setOutputLogs([{ type: 'error', text: message }]);
       setOutputDuration('Run failed');
       showToast(message, 'error');
     } finally {
+      if (runAbortRef.current === controller) runAbortRef.current = null;
       setIsRunning(false);
     }
   }, [activeNode, isRunning, outputStdin, room, roomId, setOutputCollapsed, showToast]);
@@ -1481,12 +1517,15 @@ function RoomPage({ roomId }: { roomId: string }) {
   const [detail, setDetail] = useState<RoomDetail | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const userId = user?.id;
+  const guestRoomId = guest?.roomId;
+  const guestToken = guest?.token;
 
   useEffect(() => {
     if (sessionLoading) return;
 
     // Not signed in and not a guest for this room → go to landing
-    if (!user && (!guest || guest.roomId !== roomId)) {
+    if (!userId && guestRoomId !== roomId) {
       navigate({ name: 'landing' }, { replace: true });
       return;
     }
@@ -1513,9 +1552,9 @@ function RoomPage({ roomId }: { roomId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [roomId, user, guest, sessionLoading]);
+  }, [roomId, userId, guestRoomId, guestToken, sessionLoading]);
 
-  if (sessionLoading || loading || !detail || detail.room.id !== roomId) {
+  if (sessionLoading || loading || (!error && (!detail || detail.room.id !== roomId))) {
     return (
       <div className="loading">
         <Icon name="refresh" size={22} className="spin" />
@@ -1544,7 +1583,8 @@ function RoomPage({ roomId }: { roomId: string }) {
 
   if (!detail) return null;
 
-  return <WorkspaceShell roomId={roomId} detail={detail} />;
+  const currentDetail = user ? { ...detail, identity: { ...detail.identity, name: user.name, color: user.color } } : detail;
+  return <WorkspaceShell roomId={roomId} detail={currentDetail} />;
 }
 
 // ─── Root router ──────────────────────────────────────────────────────────────

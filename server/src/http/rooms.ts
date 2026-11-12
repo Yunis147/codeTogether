@@ -4,8 +4,9 @@ import { NodeType, Role } from '@prisma/client';
 import * as Y from 'yjs';
 import { z } from 'zod';
 import { AccessError, ROLE_RANK, type RoomAccess } from '../access.js';
-import { executeProject, type RunnableLanguage } from '../judge0.js';
-import { createZip, type ZipEntry } from '../lib/zip.js';
+import { executeProject, pollExecution, type RunnableLanguage } from '../judge0.js';
+import { createZip } from '../lib/zip.js';
+import { downloadDisposition, zipEntriesFor } from '../lib/projectPaths.js';
 import { prisma } from '../prisma.js';
 import {
   STARTER_CODE,
@@ -13,12 +14,14 @@ import {
   STARTER_FILE_NAME,
   createStarterContent,
   createStarterTree,
+  withRoomPersistence,
 } from '../sync/tree.js';
-import { resetRoomIdentityConnections, resetRoomShareLinkConnections } from '../sync/index.js';
-import { announceRoomRename, evictRoomIdentityFromChat, evictRoomShareLinkFromChat } from '../chat.js';
+import { closeDeletedRoomConnections, resetRoomIdentityConnections, resetRoomShareLinkConnections } from '../sync/index.js';
+import { announceRoomRename, evictFromRoomChat, evictRoomIdentityFromChat, evictRoomShareLinkFromChat } from '../chat.js';
 import { firstIssue, rateLimit, withRoomAccess, withUser } from './middleware.js';
 
 export const roomsRouter = Router();
+const pendingRuns = new Map<string, { roomId: string; expiresAt: number }>();
 
 const roomNameSchema = z.object({
   name: z
@@ -114,6 +117,7 @@ const runSchema = z
   });
 
 function runnableLanguage(language: string | null, path: string): RunnableLanguage | null {
+  if (language && ['python', 'java', 'javascript', 'typescript', 'c', 'cpp'].includes(language)) return language as RunnableLanguage;
   if (language === 'python' || /\.py$/i.test(path)) return 'python';
   if (language === 'java' || /\.java$/i.test(path)) return 'java';
   if (language === 'javascript' || /\.(?:cjs|js|mjs)$/i.test(path)) return 'javascript';
@@ -261,6 +265,8 @@ roomsRouter.delete(
     requireOwner(access);
     // Memberships, share links and files all cascade from the room.
     await prisma.room.delete({ where: { id: access.roomId } });
+    closeDeletedRoomConnections(access.roomId);
+    evictFromRoomChat(access.roomId, () => true);
     response.status(204).end();
   }),
 );
@@ -507,9 +513,9 @@ roomsRouter.delete(
       }
     }
 
-    await prisma.file.deleteMany({
+    await withRoomPersistence(access.roomId, () => prisma.file.deleteMany({
       where: { id: { in: Array.from(toDelete) }, roomId: access.roomId },
-    });
+    }));
 
     response.status(204).end();
   }),
@@ -520,9 +526,9 @@ roomsRouter.delete(
   withRoomAccess(async (access, _request, response) => {
     requireEditor(access);
 
-    await prisma.file.deleteMany({
+    await withRoomPersistence(access.roomId, () => prisma.file.deleteMany({
       where: { roomId: access.roomId, deletedAt: { not: null } },
-    });
+    }));
 
     response.status(204).end();
   }),
@@ -644,49 +650,25 @@ roomsRouter.post(
       stdin: parsed.data.stdin,
     });
 
+    if (result.token) {
+      for (const [token, run] of pendingRuns) if (run.expiresAt < Date.now()) pendingRuns.delete(token);
+      pendingRuns.set(result.token, { roomId: access.roomId, expiresAt: Date.now() + 30 * 60_000 });
+    }
     response.json({ result });
   }),
 );
 
-/** Strips anything that could escape the archive root or confuse an extractor. */
-function pathSegment(name: string): string {
-  const cleaned = name.replace(/[\\/:*?"<>|]/g, '_').trim();
-  return cleaned === '' || cleaned === '.' || cleaned === '..' ? '_' : cleaned;
-}
-
-type FileRow = {
-  id: string;
-  parentId: string | null;
-  name: string;
-  type: NodeType;
-  textContent: string | null;
-};
-
-function zipEntriesFor(files: FileRow[]): ZipEntry[] {
-  const byId = new Map(files.map((file) => [file.id, file]));
-
-  const pathOf = (file: FileRow): string => {
-    const segments: string[] = [];
-    const seen = new Set<string>();
-    let node: FileRow | undefined = file;
-
-    while (node && !seen.has(node.id)) {
-      seen.add(node.id);
-      segments.unshift(pathSegment(node.name));
-      node = node.parentId ? byId.get(node.parentId) : undefined;
-    }
-
-    return segments.join('/');
-  };
-
-  return files
-    .map((file) =>
-      file.type === NodeType.FOLDER
-        ? { path: `${pathOf(file)}/` }
-        : { path: pathOf(file), content: file.textContent ?? '' },
-    )
-    .sort((left, right) => left.path.localeCompare(right.path));
-}
+roomsRouter.get('/:roomId/run/:token', withRoomAccess(async (access, request, response) => {
+  requireEditor(access);
+  const token = String(request.params.token);
+  const run = pendingRuns.get(token);
+  if (!run || run.roomId !== access.roomId || run.expiresAt < Date.now()) {
+    response.status(404).json({ error: 'This pending submission is no longer available.' }); return;
+  }
+  const result = await pollExecution(token);
+  if (!result.token) pendingRuns.delete(token);
+  response.json({ result });
+}));
 
 roomsRouter.get(
   '/:roomId/export',
@@ -710,10 +692,9 @@ roomsRouter.get(
     }
 
     const archive = createZip(zipEntriesFor(files));
-    const filename = pathSegment(room.name).replace(/\s+/g, '-').toLowerCase();
 
     response.setHeader('Content-Type', 'application/zip');
-    response.setHeader('Content-Disposition', `attachment; filename="${filename || 'project'}.zip"`);
+    response.setHeader('Content-Disposition', downloadDisposition(room.name));
     response.send(archive);
   }),
 );

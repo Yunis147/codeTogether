@@ -16,6 +16,8 @@ export function SearchPanel() {
   const [state, setState] = useState<'idle' | 'searching' | 'done' | 'error'>('idle');
 
   useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
     const trimmed = query.trim();
 
     if (trimmed.length < 2) {
@@ -31,11 +33,13 @@ export function SearchPanel() {
       try {
         const result = await api<{ results: SearchResult[] }>(
           `/api/rooms/${currentRoom.roomId}/search?q=${encodeURIComponent(trimmed)}`,
+          { signal: controller.signal },
         );
         serverResults = result.results;
       } catch {
         // Fallback to client-side search if server request fails
       }
+      if (cancelled) return;
 
       // Merge with live tree/active documents
       const activeFileIds = new Set(currentRoom.tree.filter((n) => n.type === 'FILE').map((n) => n.id));
@@ -103,7 +107,7 @@ export function SearchPanel() {
       setState('done');
     }, 200);
 
-    return () => window.clearTimeout(timer);
+    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer); };
   }, [query, room.roomId]);
 
   const total = useMemo(

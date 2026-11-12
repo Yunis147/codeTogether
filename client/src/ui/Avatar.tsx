@@ -1,3 +1,6 @@
+import { resolveApiUrl } from '../api';
+import { useState } from 'react';
+
 const PRESENCE_COLORS = [
   '#ad96ff',
   '#ffbd8b',
@@ -27,6 +30,7 @@ type AvatarProps = {
 };
 
 export function Avatar({ name, color, size = 28, title, ring = false, photoUrl = null }: AvatarProps) {
+  const [failedPhoto, setFailedPhoto] = useState<string | null>(null);
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -45,7 +49,7 @@ export function Avatar({ name, color, size = 28, title, ring = false, photoUrl =
       }}
       title={title ?? name}
     >
-      {photoUrl ? <img src={photoUrl} alt="" /> : initials || name[0]?.toUpperCase() || '?'}
+      {photoUrl && failedPhoto !== photoUrl ? <img src={resolveApiUrl(photoUrl)} alt="" width={size} height={size} onError={() => setFailedPhoto(photoUrl)} /> : initials || name[0]?.toUpperCase() || '?'}
     </span>
   );
 }

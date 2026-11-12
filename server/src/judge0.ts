@@ -9,6 +9,7 @@ export type ExecutionFile = {
 };
 
 export type ExecutionResult = {
+  token: string | null;
   status: { id: number; description: string };
   stdout: string | null;
   stderr: string | null;
@@ -43,8 +44,8 @@ const ONLINECOMPILER_LANG_IDS: Record<RunnableLanguage, number> = {
 
 const REQUEST_TIMEOUT_MS = 20_000;
 
-function quoteForShell(value: string): string {
-  return `'${value.replace(/'/g, "'\\\"'\\\"'")}'`;
+export function quoteForShell(value: string): string {
+  return "'" + value.split("'").join("'\"'\"'") + "'";
 }
 
 function classNameForJava(entryPath: string, source: string): string {
@@ -117,6 +118,29 @@ function asNullableString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function executionResult(body: Judge0Response, token?: string): ExecutionResult {
+  const pending = (body.status?.id ?? 1) <= 2;
+  return {
+    token: pending ? token ?? body.token ?? null : null,
+    status: { id: body.status?.id ?? (token ? 1 : 13), description: body.status?.description ?? (token ? 'In Queue' : 'Execution completed') },
+    stdout: asNullableString(body.stdout), stderr: asNullableString(body.stderr),
+    compileOutput: asNullableString(body.compile_output), message: asNullableString(body.message),
+    time: asNullableString(body.time), memory: typeof body.memory === 'number' ? body.memory : null,
+  };
+}
+
+export async function pollExecution(token: string): Promise<ExecutionResult> {
+  let response: Response;
+  try {
+    response = await fetch(`${env.JUDGE0_URL}/submissions/${encodeURIComponent(token)}?base64_encoded=false`, {
+      headers: judge0Headers(), signal: AbortSignal.timeout(5_000),
+    });
+  } catch { throw new Judge0Error('The code runner could not be reached. Try again shortly.', 503); }
+  const body = await response.json().catch(() => null) as Judge0Response | null;
+  if (!response.ok || !body || body.error) throw new Judge0Error('The runner could not retrieve this submission.', 502);
+  return executionResult(body, token);
+}
+
 /**
  * Runs a generated project archive in Judge0. The shell scripts are generated
  * here from the selected language; workspace content is never run by Node.
@@ -158,7 +182,7 @@ export async function executeProject({
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {
-    throw new Judge0Error('The code runner is unavailable. Start Judge0 with Docker and try again.', 503);
+    throw new Judge0Error('The code runner is unavailable. Try again shortly.', 503);
   }
 
   let body = (await response.json().catch(() => null)) as Judge0Response | null;
@@ -170,12 +194,13 @@ export async function executeProject({
   if (body.error) throw new Judge0Error(`The code runner rejected this submission (${body.error})`, 502);
 
   // If the runner returns a pending token (In Queue or Processing), poll for completion
-  if (body.token && (body.status?.id == null || body.status.id <= 2)) {
+  const submissionToken = body.token;
+  if (submissionToken && (body.status?.id == null || body.status.id <= 2)) {
     const startTime = Date.now();
     while (Date.now() - startTime < 15_000) {
       await new Promise((resolve) => setTimeout(resolve, 800));
       try {
-        const pollRes = await fetch(`${env.JUDGE0_URL}/submissions/${body.token}?base64_encoded=false`, {
+        const pollRes = await fetch(`${env.JUDGE0_URL}/submissions/${submissionToken}?base64_encoded=false`, {
           headers: judge0Headers(),
           signal: AbortSignal.timeout(5_000),
         });
@@ -192,18 +217,7 @@ export async function executeProject({
     }
   }
 
-  return {
-    status: {
-      id: typeof body.status?.id === 'number' ? body.status.id : 13,
-      description: body.status?.description ?? 'Execution completed',
-    },
-    stdout: asNullableString(body.stdout),
-    stderr: asNullableString(body.stderr),
-    compileOutput: asNullableString(body.compile_output),
-    message: asNullableString(body.message),
-    time: asNullableString(body.time),
-    memory: typeof body.memory === 'number' ? body.memory : null,
-  };
+  return executionResult(body, submissionToken);
 }
 
 export class Judge0Error extends Error {

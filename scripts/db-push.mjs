@@ -20,7 +20,8 @@ try {
 }
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const child = spawn(npm, ['run', 'db:push', '--workspace=server'], { stdio: 'inherit' });
+const child = spawn(npm, ['run', 'db:push', '--workspace=server'], { stdio: 'inherit', shell: process.platform === 'win32' });
+child.on('error', (error) => { console.error(`Could not launch npm: ${error.message}`); process.exitCode = 1; });
 child.on('exit', (code) => {
   process.exitCode = code ?? 1;
 });

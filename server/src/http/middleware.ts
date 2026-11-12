@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
+import multer from 'multer';
 import {
   AccessError,
   currentUser,
@@ -105,6 +106,11 @@ export function errorHandler(
 
   if (error instanceof ZodError) {
     response.status(400).json({ error: firstIssue(error) });
+    return;
+  }
+
+  if (error instanceof multer.MulterError) {
+    response.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Choose an image under 2 MB.' : 'Check the uploaded image.' });
     return;
   }
 

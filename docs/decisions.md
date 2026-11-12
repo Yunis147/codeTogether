@@ -166,3 +166,23 @@ Format:
 - Decision: expose the active-user list through the authenticated Socket.IO room connection, while retaining Yjs awareness for cursors and follow state.
 - Why: every open workspace already keeps an authenticated Socket.IO connection for chat, and its room membership supplies a reliable full roster when the independently initialized tree-document awareness handshake has not completed for every browser.
 - Alternatives: deriving the visible roster solely from tree awareness, which could leave a browser showing only its own participant state.
+
+## 2026-11-09: Explicit production browser origins
+- Decision: require `CLIENT_ORIGIN` in production and enforce the same exact-origin allowlist for HTTP, Hocuspocus upgrades, and Socket.IO handshakes. Credentials remain in httpOnly cookies.
+- Why: permissive credentialed CORS and unchecked WebSocket origins allow unrelated websites to act with a browser session. Render must be configured with the actual Vercel origin before deployment.
+- Alternatives: relying on HTTP CORS for WebSockets, or reflecting every origin, neither of which protects browser sessions.
+
+## 2026-11-09: Serialize persistence and retain unacknowledged documents
+- Decision: serialize tree, content, and recycle-bin writes per room; create content rows only through the room-scoped tree mirror; propagate storage errors unless the room was deleted and retry retained documents with backoff from 2 to 30 seconds. Keep dirty closed tabs and pending imports attached, sharing the import provider if its file is opened.
+- Why: asynchronous snapshots could overwrite newer state, late content saves could recreate permanently deleted rows, and detached providers could lose offline edits. Database mirror writes also use scoped updates to prevent globally keyed file collisions from crossing room boundaries.
+- Alternatives: schema changes, durable client storage, or treating timeouts as success. No schema migration is needed for these fixes. Durable offline storage remains a separate feature; the sync status indicates transport acknowledgement, not database commit.
+
+## 2026-11-09: Continue cloud execution through room-scoped polling
+- Decision: preserve OnlineCompiler.io language IDs and initial polling, retain a stable pending token, and expose authenticated `GET /api/rooms/:roomId/run/:token` retrieval for pending submissions. The frontend can stop waiting. Pending tokens are held in process memory for 30 minutes and checked against current editor access to their room.
+- Why: a slow cloud submission must not be presented as completed merely because the initial polling window ended. Submission ownership checks prevent the new endpoint from becoming an unrestricted runner proxy.
+- Alternatives: longer blocking HTTP requests or persisting runner jobs in PostgreSQL. Restarting the backend invalidates pending retrieval; completed source files and projects remain unaffected.
+
+## 2026-11-09: Refine the existing workspace design and accessible dialogs
+- Decision: preserve the current Monaco layout and custom confirmation dialogs while improving contrast, spacing, form validation, focus trapping, reduced motion, and the mobile sidebar/status bar. Profile metadata updates do not unmount the workspace.
+- Why: users should retain their tabs, undo history, and editing context while changing profile information, and the existing controls should work on keyboards and compact screens.
+- Alternatives: replacing the application layout or reverting confirmations to browser dialogs, which would disrupt established workflows.

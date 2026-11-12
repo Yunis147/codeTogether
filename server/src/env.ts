@@ -28,7 +28,21 @@ const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
-const parsed = schema.safeParse(process.env);
+const parsed = schema.superRefine((value, context) => {
+  if (value.NODE_ENV === 'production' && !value.CLIENT_ORIGIN?.trim()) {
+    context.addIssue({ code: 'custom', path: ['CLIENT_ORIGIN'], message: 'Set the trusted frontend URL in production.' });
+  }
+  for (const rawOrigin of (value.CLIENT_ORIGIN ?? '').split(',').filter(Boolean)) {
+    const origin = rawOrigin.trim().replace(/\/+$/, '');
+    if (!origin || origin === '*') continue;
+    try {
+      const url = new URL(origin);
+      if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin) throw new Error();
+    } catch {
+      context.addIssue({ code: 'custom', path: ['CLIENT_ORIGIN'], message: 'Use comma-separated HTTP(S) origins.' });
+    }
+  }
+}).safeParse(process.env);
 
 if (!parsed.success) {
   const problems = parsed.error.issues.map((issue) => `  ${issue.path.join('.')}: ${issue.message}`);

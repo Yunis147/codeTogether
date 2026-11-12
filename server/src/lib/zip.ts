@@ -1,4 +1,17 @@
-import { crc32, deflateRawSync } from 'node:zlib';
+import { deflateRawSync } from 'node:zlib';
+
+const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  return crc >>> 0;
+});
+
+/** Node 20 supports deflate but does not export zlib.crc32. */
+export function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255];
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 /**
  * A minimal ZIP writer. Export reads plain text straight out of Postgres, so
@@ -69,7 +82,7 @@ export function createZip(entries: ZipEntry[], now = new Date()): Buffer {
     const local = Buffer.alloc(30);
     local.writeUInt32LE(LOCAL_FILE_HEADER, 0);
     local.writeUInt16LE(VERSION, 4);
-    local.writeUInt16LE(0, 6); // flags: sizes are known up front, so no data descriptor
+    local.writeUInt16LE(0x0800, 6); // UTF-8 filenames; sizes are known up front.
     local.writeUInt16LE(method, 8);
     local.writeUInt16LE(time, 10);
     local.writeUInt16LE(date, 12);
@@ -84,7 +97,7 @@ export function createZip(entries: ZipEntry[], now = new Date()): Buffer {
     central.writeUInt32LE(CENTRAL_FILE_HEADER, 0);
     central.writeUInt16LE(VERSION_MADE_BY_UNIX, 4); // version made by (Unix)
     central.writeUInt16LE(VERSION, 6); // version needed to extract
-    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0x0800, 8);
     central.writeUInt16LE(method, 10);
     central.writeUInt16LE(time, 12);
     central.writeUInt16LE(date, 14);

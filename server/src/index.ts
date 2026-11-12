@@ -10,6 +10,7 @@ import { roomsRouter } from './http/rooms.js';
 import { shareRouter } from './http/share.js';
 import { prisma } from './prisma.js';
 import { syncServer, handleSyncUpgrade } from './sync/index.js';
+import { browserOrigins } from './lib/origins.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -31,27 +32,18 @@ httpServer.on('upgrade', async (request, socket, head) => {
 app.set('trust proxy', 1);
 
 // Cross-origin support for separate frontend (e.g. Vercel) and backend deployments.
-app.use((request, response, next) => {
-  const origin = request.headers.origin;
-  const allowed = env.CLIENT_ORIGIN || origin;
-  if (origin && (allowed === '*' || allowed === origin || !env.CLIENT_ORIGIN)) {
-    response.setHeader('Access-Control-Allow-Origin', origin);
-    response.setHeader('Access-Control-Allow-Credentials', 'true');
-    response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  }
-  if (request.method === 'OPTIONS') {
-    response.sendStatus(204);
-    return;
-  }
-  next();
-});
+app.use(browserOrigins);
 
 // Execution requests can carry a small project snapshot while typed edits still
 // travel through Yjs. The run route enforces its own tighter 1 MB source limit.
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
-app.use('/uploads', express.static(path.resolve('uploads')));
+app.use('/uploads', express.static(path.resolve('uploads'), {
+  setHeaders: (response) => {
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  },
+}));
 
 app.use('/api/auth', authRouter);
 app.use('/api/rooms', roomsRouter);

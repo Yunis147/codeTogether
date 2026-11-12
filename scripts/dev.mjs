@@ -25,15 +25,16 @@ try {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: 'inherit', ...options });
+    const child = spawn(command, args, { stdio: 'inherit', shell: process.platform === 'win32' && command.endsWith('.cmd'), ...options });
     child.on('error', reject);
     child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`${command} exited with code ${code}`)));
   });
 }
 
 function start(command, args, name) {
-  const child = spawn(command, args, { stdio: 'inherit' });
+  const child = spawn(command, args, { stdio: 'inherit', shell: process.platform === 'win32' && command.endsWith('.cmd') });
   children.add(child);
+  child.on('error', (error) => { console.error(`${name}: ${error.message}`); stop(1); });
   child.on('exit', (code) => {
     children.delete(child);
     if (!stopping && code !== 0) stop(code ?? 1);

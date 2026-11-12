@@ -14,6 +14,7 @@ import {
 import { monaco } from '../monaco/setup';
 import type { ConnectionState, NodeType, Person, Role, TreeNode } from '../types';
 import { languageFor } from './language';
+import { waitForSync } from './syncWait';
 import {
   CONTENT_TEXT_KEY,
   createNode,
@@ -131,11 +132,13 @@ export function RoomProvider({
   children,
 }: RoomProviderProps) {
   const [serverReadOnly, setServerReadOnly] = useState(role === 'VIEWER');
-  const readOnly = role === 'VIEWER' || serverReadOnly;
+  const readOnly = serverReadOnly;
 
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [authError, setAuthError] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
+  const [treeSynced, setTreeSynced] = useState(false);
+  const initiallyOpened = useRef(false);
   const [people, setPeople] = useState<Person[]>([]);
   const [openFileIds, setOpenFileIds] = useState<string[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -153,6 +156,7 @@ export function RoomProvider({
   const treeProviderRef = useRef<HocuspocusProvider | null>(null);
   const treeDocRef = useRef<Y.Doc | null>(null);
   const documentsRef = useRef(new Map<string, OpenDocument>());
+  const pendingImportsRef = useRef(new Map<string, { doc: Y.Doc; provider: HocuspocusProvider; importing: boolean }>());
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const unsyncedRef = useRef(new Map<string, number>());
   const pendingRevealRef = useRef<{ fileId: string; line: number; column: number } | null>(null);
@@ -184,6 +188,13 @@ export function RoomProvider({
     },
     [recomputeUnsynced],
   );
+
+  useEffect(() => {
+    if (!unsyncedTotal) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [unsyncedTotal]);
 
   // One WebSocket for the room; every document multiplexes over it.
   useEffect(() => {
@@ -225,7 +236,7 @@ export function RoomProvider({
 
     let css = '';
     for (const [clientId, { color, name }] of map) {
-      const safeName = name.replace(/["\\]/g, '\\$&');
+      const safeName = CSS.escape(name);
       css += `.yRemoteSelection-${clientId} { --remote-tint: ${color}33; }\n`;
       css += `.yRemoteSelectionHead-${clientId} { --remote-color: ${color}; --remote-name: "${safeName}"; }\n`;
     }
@@ -245,16 +256,25 @@ export function RoomProvider({
       document: doc,
       token: token ?? '',
       onStatus: ({ status }) => setConnection(status as ConnectionState),
+      onClose: () => {
+        // Membership resets close document channels while their shared socket
+        // can stay open. Reconnect the transport to refresh every file's access.
+        if (websocket.status === 'connected' && websocket.shouldConnect) {
+          setConnection('connecting');
+          setServerReadOnly(true);
+          websocket.webSocket?.close();
+        }
+      },
       onAuthenticated: ({ scope }) => {
         setConnection('connected');
-        if (scope === 'readonly') {
-          setServerReadOnly(true);
-        }
+        setServerReadOnly(scope === 'readonly');
+        setAuthError(null);
         // An awareness update sent before authentication is not useful for
         // server-stamped identity. Announce once the connection is authorised.
         queueMicrotask(() => publishPresence?.());
       },
-      onSynced: () => {
+      onSynced: ({ state }) => {
+        if (state) setTreeSynced(true);
         setConnection('connected');
         publishPresence?.();
       },
@@ -357,7 +377,8 @@ export function RoomProvider({
 
   // Open the first file once the tree arrives, so the editor is never empty on initial load.
   useEffect(() => {
-    if (activeFileId !== null || tree.length === 0) return;
+    if (initiallyOpened.current || activeFileId !== null || !treeSynced) return;
+    initiallyOpened.current = true;
 
     const first = tree
       .filter((node) => node.type === 'FILE')
@@ -367,7 +388,7 @@ export function RoomProvider({
       setOpenFileIds([first.id]);
       setActiveFileId(first.id);
     }
-  }, [tree, activeFileId]);
+  }, [tree, activeFileId, treeSynced]);
 
   const attachEditor = useCallback((editor: monaco.editor.IStandaloneCodeEditor | null) => {
     editorRef.current = editor;
@@ -408,13 +429,19 @@ export function RoomProvider({
     for (const fileId of openFileIds) {
       if (live.has(fileId)) continue;
 
-      const doc = new Y.Doc();
-      const provider = new HocuspocusProvider({
+      // Opening an import while it is syncing must reuse its provider: the
+      // shared WebSocket allows only one provider for each document name.
+      const pendingImport = pendingImportsRef.current.get(fileId);
+      const doc = pendingImport?.doc ?? new Y.Doc();
+      const provider = pendingImport?.provider ?? new HocuspocusProvider({
         websocketProvider: websocket,
         name: fileDocumentName(roomId, fileId),
         document: doc,
         token: token ?? '',
-        onUnsyncedChanges: ({ number }) => reportUnsynced(fileId, number),
+        onUnsyncedChanges: ({ number }) => {
+          reportUnsynced(fileId, number);
+          if (number === 0) setDocumentsVersion((version) => version + 1);
+        },
         onAuthenticationFailed: ({ reason }) => {
           setConnection('disconnected');
           setAuthError(reason || 'You no longer have access to this room.');
@@ -446,7 +473,7 @@ export function RoomProvider({
     }
 
     for (const [fileId, open] of live) {
-      if (!openFileIds.includes(fileId)) {
+      if (!openFileIds.includes(fileId) && !pendingImportsRef.current.has(fileId) && !open.provider.hasUnsyncedChanges) {
         destroyDocument(open);
         live.delete(fileId);
         changed = true;
@@ -456,13 +483,18 @@ export function RoomProvider({
     if (changed) {
       setDocumentsVersion((v) => v + 1);
     }
-  }, [openFileIds, roomId, token, editorReady, reportUnsynced, destroyDocument, tree, refreshCursorStyles]);
+  }, [openFileIds, roomId, token, editorReady, reportUnsynced, destroyDocument, tree, refreshCursorStyles, documentsVersion]);
 
   useEffect(() => {
     const live = documentsRef.current;
+    const imports = pendingImportsRef.current;
     return () => {
       for (const open of live.values()) destroyDocument(open);
+      for (const [fileId, pending] of imports) {
+        if (!live.has(fileId)) { pending.provider.destroy(); pending.doc.destroy(); }
+      }
       live.clear();
+      imports.clear();
     };
   }, [destroyDocument]);
 
@@ -660,7 +692,10 @@ export function RoomProvider({
     async (entries: { path: string; content: string }[]): Promise<number> => {
       const doc = treeDocRef.current;
       const websocket = websocketRef.current;
-      if (!doc || !websocket || readOnly) return 0;
+      if (readOnly) throw new Error('Editors can import files.');
+      if (!doc || !websocket || websocket.status !== 'connected' || !treeSynced) {
+        throw new Error('Reconnect before importing a project.');
+      }
 
       const folders = new Map<string, string>();
       let created = 0;
@@ -686,7 +721,7 @@ export function RoomProvider({
 
           const id = existing?.id ?? crypto.randomUUID();
           if (!existing) {
-            createNode(doc, { id, parentId, name: segment, type: 'FOLDER' });
+            createNode(doc, { id, parentId, name: uniqueName(nodes, parentId, segment), type: 'FOLDER' });
           }
 
           folders.set(path, id);
@@ -724,6 +759,15 @@ export function RoomProvider({
         const flush = new Promise<void>((resolve) => {
           flushState.resolve = resolve;
         });
+        const releaseImport = () => {
+          pendingImportsRef.current.delete(fileId);
+          if (documentsRef.current.has(fileId)) {
+            setDocumentsVersion((version) => version + 1);
+          } else {
+            provider.destroy(); fileDoc.destroy();
+            unsyncedRef.current.delete(fileId); recomputeUnsynced();
+          }
+        };
         const provider = new HocuspocusProvider({
           websocketProvider: websocket,
           name: fileDocumentName(roomId, fileId),
@@ -736,15 +780,24 @@ export function RoomProvider({
             if (state) initialSyncState.resolve();
           },
           onUnsyncedChanges: ({ number }) => {
+            reportUnsynced(fileId, number);
             if (waitingForFlush && number === 0) flushState.resolve();
+            if (number === 0) {
+              setDocumentsVersion((version) => version + 1);
+              if (pendingImportsRef.current.get(fileId)?.importing === false) queueMicrotask(releaseImport);
+            }
           },
         });
+        pendingImportsRef.current.set(fileId, { doc: fileDoc, provider, importing: true });
         provider.attach();
 
-        await Promise.race([
-          initialSync,
-          new Promise<void>((resolve) => window.setTimeout(resolve, 5_000)),
-        ]);
+        try {
+          await waitForSync(initialSync, 'Import could not connect. Reconnect and try again.');
+        } catch (error) {
+          deleteNode(doc, readTree(doc), fileId);
+          releaseImport();
+          throw error;
+        }
 
         waitingForFlush = true;
         fileDoc.getText(CONTENT_TEXT_KEY).insert(0, entry.content);
@@ -752,19 +805,22 @@ export function RoomProvider({
         // synchronous Yjs transaction returns, there is no event left to wait
         // for. Otherwise the pre-registered callback resolves the promise.
         if (!provider.hasUnsyncedChanges) flushState.resolve();
-        await Promise.race([
-          flush,
-          new Promise<void>((resolve) => window.setTimeout(resolve, 5_000)),
-        ]);
+        try {
+          await waitForSync(flush, 'Import delivery is pending. Keep this room open while reconnecting.');
+        } catch (error) {
+          const pending = pendingImportsRef.current.get(fileId);
+          if (pending && provider.hasUnsyncedChanges) pending.importing = false;
+          else releaseImport();
+          throw error;
+        }
 
-        provider.destroy();
-        fileDoc.destroy();
+        releaseImport();
         created += 1;
       }
 
       return created;
     },
-    [readOnly, roomId, token],
+    [readOnly, roomId, token, treeSynced, reportUnsynced, recomputeUnsynced],
   );
 
   const undo = useCallback(() => activeDocument()?.undoManager.undo(), [activeDocument]);
@@ -788,14 +844,14 @@ export function RoomProvider({
 
   const deletedFileIds = useMemo(
     // Before the tree has loaded, nothing is known to be missing.
-    () => (tree.length === 0 ? [] : openFileIds.filter((id) => !knownIds.has(id))),
-    [openFileIds, knownIds, tree.length],
+    () => (!treeSynced ? [] : openFileIds.filter((id) => !knownIds.has(id))),
+    [openFileIds, knownIds, treeSynced],
   );
 
   const value = useMemo<RoomValue>(
     () => ({
       roomId,
-      role,
+      role: readOnly ? 'VIEWER' : role === 'OWNER' ? 'OWNER' : 'EDITOR',
       readOnly,
       connection,
       unsaved: unsyncedTotal > 0,
